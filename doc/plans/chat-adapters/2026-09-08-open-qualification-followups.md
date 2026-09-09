@@ -143,10 +143,14 @@ installed adapter; default-import regression passes 192/192. Server 76 has not
 been restarted, so this is not deployed or live-provider proof. The repair
 bounds post-mention-resolution payloads including the SDK's pending buffer,
 validates coherent native receipts and prevents fallback after ambiguous or
-partial delivery. Boole is implementing native Telegram Stop as
-stopping the exact private draft presentation, never cancelling a current
-task/run. Durable draft ownership and final-send arbitration are required;
-neither candidate is deployed yet. Root repaired the server's release bundle
+partial delivery. Boole's Telegram Stop implementation is also frozen and
+independently reviewed: it stops the exact private draft presentation, never
+the current task/run. Durable ownership, final-send arbitration and a
+non-reusing instance sequence are covered by the new tests. Root's fresh
+combined repeat passes **825/825** integration, **31/31** deterministic browser
+and **348/348** helper/runtime tests. DB/shared/server/UI plain types pass.
+Migration 0259 is generated and verified but not live yet; neither fix is
+deployed at this checkpoint. Root repaired the server's release bundle
 manifest so all five adapter patches and the Discord transport patch ship to
 npm consumers. Packaging contracts pass 22/22; an isolated production-helper
 stage at patch snapshot `1a0a77025` applied every patch and confirmed Discord
@@ -193,10 +197,11 @@ those as missing. Actual pinned-parser probes found three separate gaps:
   no-public-fallback regressions pass, including preserved exact-actor DM
   notices. The final Telegram cohort passes 154/154, helper/runtime 51/51 and
   plain server types. Private commands remain off.
-- Native generation-stop updates are neither subscribed nor dispatched, and
-  draft IDs are process-local. First distinguish stopping the presentation of
-  already-approved output from cancelling a live model run; require durable
-  exact draft/publication ownership. Never cancel whichever run is current.
+- On server 76, native generation-stop updates are neither subscribed nor
+  dispatched and draft IDs are process-local. The frozen successor now binds
+  exact presentation authority durably and uses a noncycling sequence that
+  survives rollback and endpoint/company deletion. The new TG4a runbook still
+  requires live native-button qualification; deterministic Stop races pass.
 
 Rich input and private callback fixes are committed/pushed as `b9802d9e4` and
 deployed on server 76. Final recovery review found that **old queued Telegram
@@ -216,7 +221,7 @@ browser checks pass **31/31** on separate fresh
 `chat_private_rich_browser_20260909_root01` in 2.8 minutes. Shared/server/UI
 plain types pass. Recovery fencing is committed/pushed as `52a46cbf6` and
 deployed on server 76. These are not new live-provider conversations.
-Native generation-stop remains unimplemented. Preserve recipient/source
+Native generation-stop remains undeployed at this checkpoint. Preserve recipient/source
 authority and never expose raw model thinking merely because a provider
 offers a thinking block.
 

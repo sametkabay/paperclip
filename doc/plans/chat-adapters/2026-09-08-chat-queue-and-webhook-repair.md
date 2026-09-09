@@ -4538,3 +4538,75 @@ build, and other adapters retain the prior frozen patch baseline.
 The user reported restoring Discord login. The actual browser controller still
 returned a locked Mac, not a provider login page; root requested an unlock and
 continued the independent code/test lanes. No new Discord journey is asserted.
+
+### September 9: exact Telegram private-draft Stop qualification
+
+The pinned adapter did not subscribe or dispatch native generation-stop events
+and allocated process-local draft IDs. The implemented handshake gives each
+private approved-output draft durable, company/endpoint-scoped ownership in
+`chat_actions`, binding conversation, publication attempt, runtime, credential,
+bot/chat/topic and approved-text digest. The authenticated actorless provider
+callback can stop only that presentation; it never cancels the current model
+run or modifies the saved answer. Native draft requests enable Stop and remove
+the temporary preview on Stop. The stopped outcome skips permanent publication
+without inventing a provider message ID or counting a cancelled part as sent.
+
+Stop and final-send arbitrate under the same publication-first lock order.
+Stop does not acquire the sender's credential lease, so a callback inside the
+first draft HTTP request cannot deadlock against it. Once final-send owns the
+claim, a late Stop cannot pretend to undo that in-flight send. Callback commit
+failure crosses the real webhook acknowledgement barrier as HTTP 503; exact
+retry may commit once. Unknown final delivery remains non-replayable after
+restart. Each new draft/final boundary rechecks current source and authority.
+
+Independent review found that retaining random draft IDs in endpoint-owned
+actions was insufficient: company/endpoint deletion erases those records.
+The proper generated migration `0259_lively_runaways.sql` adds the content-free
+instance sequence `chat_telegram_draft_ids`, positive 31-bit, cache one and
+noncycling. The schema is exported; DB build, numbering/safety checks and
+snapshot drift pass. A disposable fully migrated PostgreSQL regression proves
+no table ownership dependency, rollback consuming an ID, 64 concurrent distinct
+allocations, and two refusals after the maximum instead of wrapping. Sequence
+and snapshot checks pass **2/2** in 2.26 seconds
+(`telegram-draft-sequence-regression-0909.log`). Restoring an older database can
+rewind the high-water mark; disaster-restore non-reuse is explicitly unqualified
+in `doc/DATABASE.md`, not established by ordinary transaction rollback tests.
+
+Fresh joined service coverage passes **13/13** in 6.76 seconds
+(`telegram-stop-service-fourth01-0909.log`), covering first-request Stop, saved
+answer/run preservation, cancelled batch accounting, restart/successor,
+same-bot hard deletion/rebind, real verifier commit failure/retry, wrong scope,
+changed source/credentials and late final. Earlier failed attempts were fixture
+bootstrap, runtime-instance warming, getter arity and restart API mistakes;
+their logs are retained and do not count as passes. Transport/helper checks pass
+**19/19**; post-format plain server types pass. Independent frozen-source review
+is clear. Root preserves unrelated formatting in the large integration file.
+
+The full tracked patch applies with the production bundle helper to an isolated
+pristine upstream package, reproducing JS SHA256
+`daa1c1260e295468c4ccc86f191345988d3fdd320f099cbb9fd0b60920c53ed7`
+and declaration SHA256
+`8c13603cd31bc01a5e42b4aada8cf6f859a05832d85a53ef9cb88d452379c2df`.
+Those materialized bytes pass 19/19, with packaging contracts 7/7
+(`telegram-stop-release-{roundtrip,tests}-0909.log` and
+`telegram-stop-package-contract-0909.log`). Root separately backed up the
+installed single-link leaves and applied only the reviewed delta with
+`apply_patch`; both match the same candidate exactly. The default-import
+combined helper/runtime suite passes **348/348** across 14 files in 11.36
+seconds (`native-streams-helpers-root-0909.log`). DB/shared/UI plain types pass.
+
+Full chat integration passes **825/825** in 174.88 seconds and deterministic
+browser checks pass **31/31** in 2.8 minutes on separate fresh
+`chat_native_streams_{full,browser}_20260909_root01` databases, each migrated
+through 0259 after confirming zero fixture companies
+(`native-streams-{full,browser}-root-0909.log`). Root formatted the two new
+helper files and verified identical esbuild-emitted JavaScript, then repeated
+the installed transport/helper checks: 19/19. The first equivalence probe used
+a compiler API unavailable in TypeScript 7; the esbuild probe succeeded without
+source changes beyond formatting. Existing unrelated runtime/integration
+formatting was preserved. Server 76 remains
+unchanged; the live DB has only 0259 pending. At `08:44:14.406 UTC`, its run
+inventory was still 290 terminal/zero active, latest start `02:15:47.812`, and
+PostgreSQL was not in recovery. No live migration or new provider conversation
+has happened at this checkpoint. Runbook TG4a records the required actual
+client Stop journey separately from deterministic race coverage.

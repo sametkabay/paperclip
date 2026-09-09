@@ -98,6 +98,13 @@ import type {
   ChatSdkRuntime,
 } from "../services/chat-sdk-runtime.js";
 import { createChatSdkEndpointRuntime } from "../services/chat-sdk-runtime.js";
+import type { TelegramDraftControl } from "../services/chat-telegram-draft-stop.js";
+
+// Opt-in private physical candidate; normal CI uses the staged pinned package.
+vi.mock("@chat-adapter/telegram", async (importOriginal) => {
+  const candidate = process.env.PAPERCLIP_TELEGRAM_STOP_ADAPTER_MODULE;
+  return candidate ? import(/* @vite-ignore */ candidate) : importOriginal();
+});
 import { createDiscordAdapter } from "@chat-adapter/discord";
 import { createTeamsAdapter } from "@chat-adapter/teams";
 import {
@@ -362,6 +369,16 @@ class FakeEndpointRuntime {
         input.messageId,
         input.reaction,
       );
+  }
+
+  async streamTelegramDraft(
+    threadId: string,
+    stream: AsyncIterable<string>,
+    control: TelegramDraftControl,
+  ) {
+    if (!(await control.beforeDraft()) || !(await control.beforeFinal()))
+      return { paperclipDraftStopped: true as const };
+    return this.thread(threadId).post(stream);
   }
 
   thread(threadId: string) {
@@ -10485,6 +10502,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           "message",
           "edited_message",
           "callback_query",
+          "stopped_message_generation",
           "message_reaction",
           "my_chat_member",
         ],
@@ -59540,6 +59558,609 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       sponsorUserId,
     };
   }
+
+  describe("Telegram durable private draft Stop", () => {
+    async function draftFixture(reusedBotId?: number) {
+      const fixture = await seedCompany();
+      const initial = createService(
+        new FakeChatSdkRuntime(),
+        fakeTelegramFetch(reusedBotId) as typeof fetch,
+      );
+      const created = await initial.service.create(
+        fixture.companyId,
+        {
+          provider: "telegram",
+          assignedAgentId: fixture.assignedAgentId,
+          name: "Private draft fixture",
+        },
+        "owner-user",
+      );
+      await initial.service.configure(
+        created.id,
+        {
+          action: "configure",
+          credentials: {
+            botToken: "123456:telegram-draft-fixture",
+          },
+        },
+        "owner-user",
+      );
+      let context = {
+        ...initial,
+        endpoint: created,
+        callbacks: initial.runtime.configurations.get(created.id)!.callbacks,
+      };
+      const { endpoint, callbacks } = context;
+      const chatId = "77118878";
+      const threadId = `telegram:${chatId}:42`;
+      const thread = makeThread({
+        channelId: chatId,
+        id: threadId,
+        isDM: true,
+        name: "Telegram private draft",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: thread.thread,
+        message: makeMessage({
+          id: `${chatId}:71`,
+          text: "Return the complete approved answer",
+          userId: chatId,
+        }),
+        trigger: "direct_message",
+      });
+      await qualifySetupRoundTrip(context.service, endpoint.id, chatId);
+      await context.service.test(endpoint.id, "owner-user");
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.endpointId, endpoint.id),
+            eq(chatConversations.externalThreadId, threadId),
+          ),
+        );
+      if (!conversation)
+        throw new Error("Expected exact private topic conversation");
+      const [currentEndpoint] = await db
+        .select()
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id));
+      const botId = Number(currentEndpoint!.botExternalId);
+      const requests: Array<{ method: string; body: Record<string, unknown> }> =
+        [];
+      let hook:
+        | ((method: string, body: Record<string, unknown>) => Promise<void>)
+        | undefined;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn(async (input, init) => {
+        const method = new URL(String(input)).pathname.split("/").at(-1)!;
+        if (method === "getMe")
+          return Response.json({
+            ok: true,
+            result: {
+              id: botId,
+              is_bot: true,
+              first_name: "Fixture",
+              username: "fixture_bot",
+            },
+          });
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        requests.push({ method, body });
+        await hook?.(method, body);
+        if (method.endsWith("Draft"))
+          return Response.json({ ok: true, result: true });
+        if (!["sendMessage", "sendRichMessage"].includes(method))
+          throw new Error("Unexpected draft fixture provider I/O");
+        return Response.json({
+          ok: true,
+          result: {
+            message_id: 900 + requests.length,
+            date: 1,
+            chat: { id: Number(chatId), type: "private" },
+            from: { id: botId, is_bot: true, first_name: "Fixture" },
+            text: "approved",
+          },
+        });
+      });
+      let pinned: ReturnType<typeof createChatSdkEndpointRuntime>;
+      const install = async () => {
+        const configuration = context.runtime.configurations.get(endpoint.id)!;
+        pinned = createChatSdkEndpointRuntime({
+          ...configuration,
+          logger: "silent",
+        });
+        await pinned.initialize();
+        Object.assign(context.runtime.endpoints.get(endpoint.id)!, {
+          handleWebhook: (...args: Parameters<typeof pinned.handleWebhook>) =>
+            pinned.handleWebhook(...args),
+          streamTelegramDraft: (
+            ...args: Parameters<typeof pinned.streamTelegramDraft>
+          ) => pinned.streamTelegramDraft(...args),
+        });
+      };
+      await install();
+      let updateId = 900;
+      const deliver = async (
+        draftId: number,
+        patch: Record<string, unknown> = {},
+        validSecret = true,
+        exactUpdateId?: number,
+        retainedRuntime = false,
+      ) => {
+        const configuration = context.runtime.configurations.get(endpoint.id)!;
+        if (configuration.providerConfig.provider !== "telegram")
+          throw new Error("Expected Telegram");
+        const request = new Request("https://paperclip.example/fixture", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": validSecret
+              ? configuration.providerConfig.credentials.secretToken
+              : "wrong",
+          },
+          body: JSON.stringify({
+            update_id: exactUpdateId ?? ++updateId,
+            stopped_message_generation: {
+              chat: { id: Number(chatId), type: "private" },
+              message_thread_id: 42,
+              draft_id: draftId,
+              ...patch,
+            },
+          }),
+        });
+        return retainedRuntime
+          ? pinned.handleWebhook(request)
+          : context.service.handleWebhook(
+              endpoint.publicId,
+              "telegram",
+              request,
+            );
+      };
+      return {
+        fixture,
+        endpoint,
+        conversation,
+        requests,
+        deliver,
+        botId,
+        get context() {
+          return context;
+        },
+        setHook(value: typeof hook) {
+          hook = value;
+        },
+        async send(key: string) {
+          return context.service.publishBoardMessage(
+            endpoint.id,
+            conversation.id,
+            `Approved output ${"complete safe answer. ".repeat(60)}END-${key}`,
+            key,
+            "owner-user",
+          );
+        },
+        actions: () =>
+          db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, endpoint.id),
+                eq(chatActions.kind, "telegram_publication_draft"),
+              ),
+            )
+            .orderBy(asc(chatActions.createdAt)),
+        async restart() {
+          const configuration = context.runtime.configurations.get(
+            endpoint.id,
+          )!;
+          if (configuration.providerConfig.provider !== "telegram")
+            throw new Error("Expected Telegram");
+          await pinned.shutdown();
+          await context.service.shutdown();
+          const resumed = createService(
+            new FakeChatSdkRuntime(),
+            fakeTelegramFetch(botId) as typeof fetch,
+          );
+          context = { ...context, ...resumed };
+          // Telegram is lazy, not a Gateway runtime. A verified inert update
+          // initializes the new service's actual callback binding; the next
+          // Stop below then traverses the pinned verifier/parser again.
+          await context.service.handleWebhook(
+            endpoint.publicId,
+            "telegram",
+            new Request("https://paperclip.example/fixture", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-telegram-bot-api-secret-token":
+                  configuration.providerConfig.credentials.secretToken,
+              },
+              body: "{}",
+            }),
+          );
+          await install();
+        },
+        async close() {
+          try {
+            await pinned.shutdown();
+          } finally {
+            try {
+              await retirePublicationFixture(context.service, endpoint.id);
+            } finally {
+              globalThis.fetch = originalFetch;
+            }
+          }
+        },
+      };
+    }
+
+    it("durably stops during the first draft RPC without cancelling a run, and never reuses its ID after restart", async () => {
+      const lane = await draftFixture();
+      try {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId: lane.fixture.companyId,
+          agentId: lane.fixture.assignedAgentId,
+          status: "running",
+          contextSnapshot: {},
+        });
+        const runsBefore = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, lane.fixture.companyId));
+        let stoppedId = 0;
+        lane.setHook(async (method, body) => {
+          if (method.endsWith("Draft") && !stoppedId) {
+            stoppedId = Number(body.draft_id);
+            expect((await lane.deliver(stoppedId)).status).toBe(200);
+          }
+        });
+        const publication = await lane.send("first-stopped");
+        expect(publication).toMatchObject({
+          state: "cancelled",
+          providerMessageId: null,
+          publishedAt: null,
+          redactedError:
+            "Telegram draft presentation was stopped. The saved answer and task are unchanged.",
+        });
+        expect(lane.requests.map((request) => request.method)).toEqual([
+          "sendRichMessageDraft",
+        ]);
+        expect((await lane.actions())[0]).toMatchObject({
+          status: "cancelled",
+          result: { phase: "stopped" },
+        });
+        const [comment] = await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.id, publication!.commentId!));
+        expect(comment!.body).toContain("END-first-stopped");
+        expect(
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.companyId, lane.fixture.companyId)),
+        ).toEqual(runsBefore);
+        expect(lane.context.cancelRun).not.toHaveBeenCalled();
+        expect(
+          await lane.context.service.getPublicationBatchStatus(
+            lane.endpoint.id,
+            lane.conversation.id,
+            publication!.id,
+          ),
+        ).toMatchObject({
+          published: 0,
+          total: 1,
+          cancelled: 1,
+          settled: 1,
+          canDismiss: true,
+        });
+        await expect(
+          lane.context.service.replayPublication(
+            lane.endpoint.id,
+            publication!.id,
+          ),
+        ).rejects.toThrow();
+        expect((await lane.deliver(stoppedId)).status).toBe(200);
+        await lane.restart();
+        await lane.context.service.processPendingPublications();
+        expect(lane.requests).toHaveLength(1);
+        lane.setHook(async (method) => {
+          if (method.endsWith("Draft"))
+            expect((await lane.deliver(stoppedId)).status).toBe(200);
+        });
+        const next = await lane.send("successor");
+        expect(next?.state).toBe("published");
+        const actions = await lane.actions();
+        expect(actions).toHaveLength(2);
+        expect(actions[1]!.payload.draftId).not.toBe(stoppedId);
+        expect(actions[1]).toMatchObject({
+          status: "processed",
+          result: {
+            phase: "published",
+            providerMessageId: next!.providerMessageId,
+          },
+        });
+        expect(
+          lane.requests.filter((request) => !request.method.endsWith("Draft")),
+        ).toHaveLength(1);
+      } finally {
+        await lane.close();
+      }
+    });
+
+    it("does not reuse an old draft ID after endpoint cascade deletion and same-bot re-binding", async () => {
+      const original = await draftFixture();
+      let originalClosed = false;
+      let successor: Awaited<ReturnType<typeof draftFixture>> | undefined;
+      try {
+        let oldDraftId = 0;
+        original.setHook(async (method, body) => {
+          if (method.endsWith("Draft")) {
+            oldDraftId = Number(body.draft_id);
+            expect((await original.deliver(oldDraftId)).status).toBe(200);
+          }
+        });
+        expect((await original.send("before-delete"))?.state).toBe("cancelled");
+        await original.close();
+        originalClosed = true;
+        await db
+          .delete(chatEndpoints)
+          .where(eq(chatEndpoints.id, original.endpoint.id));
+        expect(await original.actions()).toEqual([]);
+        successor = await draftFixture(original.botId);
+        successor.setHook(async (method) => {
+          if (method.endsWith("Draft"))
+            expect((await successor!.deliver(oldDraftId)).status).toBe(200);
+        });
+        expect((await successor.send("after-rebind"))?.state).toBe("published");
+        const [newDraft] = await successor.actions();
+        expect(Number(newDraft!.payload.draftId)).toBeGreaterThan(oldDraftId);
+        expect(newDraft).toMatchObject({ result: { phase: "published" } });
+        expect(
+          successor.requests.filter(
+            (request) => !request.method.endsWith("Draft"),
+          ),
+        ).toHaveLength(1);
+      } finally {
+        try {
+          if (successor) await successor.close();
+        } finally {
+          if (!originalClosed) await original.close();
+        }
+      }
+    });
+
+    it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
+      const lane = await draftFixture();
+      const suffix = randomUUID().replaceAll("-", "");
+      const functionName = `stop_fail_${suffix}`;
+      const triggerName = `stop_trigger_${suffix}`;
+      let created = false;
+      try {
+        let checked = false;
+        lane.setHook(async (method, body) => {
+          if (!method.endsWith("Draft") || checked) return;
+          checked = true;
+          const [action] = await lane.actions();
+          await db.execute(
+            sql.raw(`CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+              IF NEW.id = '${action!.id}'::uuid AND NEW.result->>'phase' = 'stopped' THEN RAISE EXCEPTION 'synthetic stop commit fault'; END IF;
+              RETURN NEW; END $$`),
+          );
+          await db.execute(
+            sql.raw(
+              `CREATE TRIGGER ${triggerName} BEFORE UPDATE ON chat_actions FOR EACH ROW EXECUTE FUNCTION ${functionName}()`,
+            ),
+          );
+          created = true;
+          expect(
+            (await lane.deliver(Number(body.draft_id), {}, true, 1777)).status,
+          ).toBe(503);
+          expect((await lane.actions())[0]).toMatchObject({
+            status: "processing",
+            result: { phase: "drafting" },
+          });
+          await db.execute(
+            sql.raw(`DROP TRIGGER ${triggerName} ON chat_actions`),
+          );
+          await db.execute(sql.raw(`DROP FUNCTION ${functionName}()`));
+          created = false;
+          expect(
+            (await lane.deliver(Number(body.draft_id), {}, true, 1777)).status,
+          ).toBe(200);
+        });
+        expect((await lane.send("commit-retry"))?.state).toBe("cancelled");
+        expect(checked).toBe(true);
+        expect(lane.requests.map((request) => request.method)).toEqual([
+          "sendRichMessageDraft",
+        ]);
+        expect((await lane.actions())[0]).toMatchObject({
+          result: { phase: "stopped", updateId: 1777 },
+        });
+      } finally {
+        try {
+          if (created) {
+            await db.execute(
+              sql.raw(`DROP TRIGGER ${triggerName} ON chat_actions`),
+            );
+            await db.execute(sql.raw(`DROP FUNCTION ${functionName}()`));
+          }
+        } finally {
+          await lane.close();
+        }
+      }
+    });
+
+    it("preserves an uncertain final after restart and a late Stop without automatic replay", async () => {
+      const lane = await draftFixture();
+      try {
+        let draftId = 0;
+        lane.setHook(async (method, body) => {
+          if (method.endsWith("Draft")) draftId = Number(body.draft_id);
+          else throw new TypeError("fetch failed");
+        });
+        const publication = await lane.send("unknown-final");
+        expect(publication).toMatchObject({
+          state: "delivery_unknown",
+          providerMessageId: null,
+          publishedAt: null,
+        });
+        expect((await lane.actions())[0]).toMatchObject({
+          status: "processing",
+          result: { phase: "final_sending" },
+        });
+        const before = lane.requests.length;
+        lane.setHook(undefined);
+        await lane.restart();
+        expect((await lane.deliver(draftId)).status).toBe(200);
+        await lane.context.service.processPendingPublications();
+        expect(lane.requests).toHaveLength(before);
+        const [current] = await db
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.id, publication!.id));
+        expect(current!.state).toBe("delivery_unknown");
+        await expect(
+          lane.context.service.replayPublication(
+            lane.endpoint.id,
+            publication!.id,
+          ),
+        ).rejects.toThrow();
+        expect(lane.context.cancelRun).not.toHaveBeenCalled();
+      } finally {
+        await lane.close();
+      }
+    });
+
+    it.each(["bot", "generation", "source", "connection"] as const)(
+      "refuses a retained Stop and later final after current %s authority changes",
+      async (changed) => {
+        const lane = await draftFixture();
+        try {
+          let checked = false;
+          lane.setHook(async (method, body) => {
+            if (!method.endsWith("Draft") || checked) return;
+            checked = true;
+            const [action] = await lane.actions();
+            const [endpoint] = await db
+              .select()
+              .from(chatEndpoints)
+              .where(eq(chatEndpoints.id, lane.endpoint.id));
+            if (changed === "bot")
+              await db
+                .update(chatEndpoints)
+                .set({ botExternalId: String(lane.botId + 1) })
+                .where(eq(chatEndpoints.id, lane.endpoint.id));
+            if (changed === "generation")
+              await db
+                .update(chatEndpoints)
+                .set({
+                  setup: {
+                    ...endpoint!.setup,
+                    runtimeGeneration:
+                      Number(endpoint!.setup.runtimeGeneration ?? 0) + 1,
+                  },
+                })
+                .where(eq(chatEndpoints.id, lane.endpoint.id));
+            if (changed === "connection")
+              await db
+                .update(toolConnections)
+                .set({ enabled: false })
+                .where(eq(toolConnections.id, endpoint!.connectionId));
+            if (changed === "source")
+              await db
+                .update(chatPublications)
+                .set({ payload: { text: "Changed current source" } })
+                .where(
+                  eq(
+                    chatPublications.id,
+                    String(action!.payload.publicationId),
+                  ),
+                );
+            expect(
+              (
+                await lane.deliver(
+                  Number(body.draft_id),
+                  {},
+                  true,
+                  undefined,
+                  true,
+                )
+              ).status,
+            ).toBe(200);
+            expect((await lane.actions())[0]).toMatchObject({
+              status: "processing",
+              result: { phase: "drafting" },
+            });
+          });
+          const publication = await lane.send(`changed-${changed}`);
+          expect(checked).toBe(true);
+          expect(publication!.state).not.toBe("published");
+          expect(publication!.state).not.toBe("cancelled");
+          expect(
+            lane.requests.every((request) => request.method.endsWith("Draft")),
+          ).toBe(true);
+          expect(lane.context.cancelRun).not.toHaveBeenCalled();
+        } finally {
+          await lane.close();
+        }
+      },
+    );
+
+    it.each([
+      "wrong_chat",
+      "wrong_topic",
+      "wrong_draft",
+      "wrong_secret",
+      "late_final",
+    ] as const)(
+      "does not withdraw an unowned or already-claimed final (%s)",
+      async (mode) => {
+        const lane = await draftFixture();
+        try {
+          let draftId = 0;
+          lane.setHook(async (method, body) => {
+            if (method.endsWith("Draft")) draftId = Number(body.draft_id);
+            if ((mode === "late_final") === !method.endsWith("Draft")) {
+              const patch =
+                mode === "wrong_chat"
+                  ? { chat: { id: 444, type: "private" } }
+                  : mode === "wrong_topic"
+                    ? { message_thread_id: 43 }
+                    : {};
+              const result = await lane.deliver(
+                mode === "wrong_draft"
+                  ? (draftId % 2_147_483_647) + 1
+                  : draftId,
+                patch,
+                mode !== "wrong_secret",
+              );
+              expect(result.status).toBe(mode === "wrong_secret" ? 403 : 200);
+            }
+          });
+          const publication = await lane.send(mode);
+          expect(publication?.state).toBe("published");
+          expect(
+            lane.requests.filter(
+              (request) => !request.method.endsWith("Draft"),
+            ),
+          ).toHaveLength(1);
+          expect((await lane.actions())[0]).toMatchObject({
+            status: "processed",
+            result: { phase: "published" },
+          });
+          expect(lane.context.cancelRun).not.toHaveBeenCalled();
+        } finally {
+          await lane.close();
+        }
+      },
+    );
+  });
 
   describe("Teams exact self-unknown source continuation", () => {
     async function nativeFileFixture() {

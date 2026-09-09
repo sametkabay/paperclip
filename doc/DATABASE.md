@@ -262,6 +262,24 @@ and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
 
+## Telegram private draft identities
+
+`chat_telegram_draft_ids` is a content-free, instance-wide PostgreSQL sequence,
+not a company-owned record. Telegram's native Stop callback carries a draft ID
+but no actor or Paperclip generation. IDs therefore must not be recycled when
+a transaction rolls back or an endpoint/company is deleted and its bot is
+connected again. The sequence allocates positive 31-bit IDs without cycling;
+exhaustion refuses new draft allocation rather than wrapping or falling back to
+random IDs. Never reset it as part of chat cleanup.
+
+The matching `chat_actions` entry remains company/endpoint-scoped and binds the
+draft to its exact conversation, publication attempt, runtime, credential and
+approved text. Stop can suppress that private draft's final publication; it
+cannot cancel a task or model run. Logical backups preserve the sequence, but
+restoring an older database may roll back its high-water mark: disaster recovery
+must not assume stale provider Stop events are safe to reuse. That restore
+boundary is not qualified by the rollback/concurrency regression.
+
 ## Attachment upload provenance
 
 `issue_attachments.originating_run_id` records server-derived run attribution at

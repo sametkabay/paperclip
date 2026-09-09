@@ -69,6 +69,13 @@ import {
 } from "./chat-telegram-media-intake.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
+  captureTelegramGenerationStopped,
+  telegramPrivateDraftDestination,
+  type TelegramDraftControl,
+  type TelegramDraftStopped,
+  type TelegramGenerationStoppedProof,
+} from "./chat-telegram-draft-stop.js";
+import {
   applySlackReceiptReaction,
   type SlackReceiptMutation,
 } from "./chat-slack-receipts.js";
@@ -443,6 +450,9 @@ export interface DiscordGatewayCallbackEvent extends ChatSdkCallbackEvent<Discor
  */
 export interface ChatSdkRuntimeCallbacks {
   onMessage(event: ChatSdkMessageCallbackEvent): Promise<void> | void;
+  onTelegramGenerationStopped?(
+    event: ChatSdkCallbackEvent<TelegramGenerationStoppedProof>,
+  ): Promise<void> | void;
   onDiscordRootMentionAdmission?(
     event: DiscordRootMentionAdmissionEvent,
   ): Promise<boolean> | boolean;
@@ -2068,6 +2078,32 @@ export class ChatSdkEndpointRuntime {
         // the secret. No parser-normalized chat:0 input may enter ordinary work.
         if (hasTelegramEphemeralInput(update)) return;
         const attempt = this.webhookIngress.getStore();
+        if (isRecord(update) && "stopped_message_generation" in update) {
+          // This wrapper is reached only after the pinned webhook secret check.
+          // Join the durable callback to the same HTTP acknowledgement barrier.
+          const proof =
+            attempt && adapter.botUserId
+              ? captureTelegramGenerationStopped(adapter.botUserId, update)
+              : null;
+          if (proof && options.callbacks.onTelegramGenerationStopped) {
+            const task = Promise.resolve().then(() =>
+              options.callbacks.onTelegramGenerationStopped!({
+                provider: "telegram",
+                endpointId: this.endpointId,
+                event: proof,
+              }),
+            );
+            attempt!.callbackPromises.add(task);
+            const handled = task
+              .catch((error) => {
+                if (attempt!.callbackError === undefined)
+                  attempt!.callbackError = error;
+              })
+              .finally(() => attempt!.callbackPromises.delete(task));
+            webhookOptions?.waitUntil?.(handled);
+          }
+          return;
+        }
         if (attempt && adapter.botUserId) {
           const captured = captureTelegramCallbackProvenance(
             {
@@ -2363,6 +2399,31 @@ export class ChatSdkEndpointRuntime {
 
   thread(threadId: string): Thread {
     return this.chat.thread(threadId);
+  }
+
+  async streamTelegramDraft(
+    threadId: string,
+    textStream: AsyncIterable<string>,
+    control: TelegramDraftControl,
+  ): Promise<{ id: string } | TelegramDraftStopped> {
+    const adapter = this.adapter as unknown as {
+      paperclipDraftStopVersion?: number;
+      stream(
+        threadId: string,
+        stream: AsyncIterable<string>,
+        options: unknown,
+      ): Promise<{ id: string } | TelegramDraftStopped>;
+    };
+    if (
+      this.provider !== "telegram" ||
+      !telegramPrivateDraftDestination(threadId) ||
+      adapter.paperclipDraftStopVersion !== 1
+    ) {
+      throw new Error("Telegram durable draft transport is unavailable");
+    }
+    return adapter.stream(threadId, textStream, {
+      paperclipDraftControl: control,
+    });
   }
 
   /**

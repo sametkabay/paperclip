@@ -855,6 +855,28 @@ Run C3, C5, and C6, then verify specifically:
 - callback data contains only an opaque short key and every click reauthorizes the Telegram principal;
 - flood-control retry honors provider timing and produces one final message.
 
+### TG4a — Exact private-draft Stop
+
+1. In a private bot chat, request an answer long enough to observe the native
+   draft. Click Telegram's **Stop** while that draft is visible. Verify the
+   preview stops and no permanent final message replaces that exact stopped
+   draft. If the client finishes too quickly to click, record that race as
+   unobserved; do not count a simulated Stop as live UI proof.
+2. Open the linked Paperclip task. The saved answer and task/run history remain
+   intact; Activity identifies the exact publication as cancelled because its
+   draft presentation was stopped. Stop is not a task/run cancellation command
+   and must not claim that other parts of an output batch were stopped.
+3. Send a follow-up. Verify its new draft/final completes normally and a late
+   duplicate Stop from the earlier draft cannot suppress it. A Stop received
+   after final-send begins must not claim to undo that already in-flight send.
+4. Use verified-webhook deterministic fixtures for first-request/Stop overlap,
+   callback database failure and retry, process restart, wrong chat/topic/bot,
+   source edits, credential revocation, and deleted-endpoint/bot rebind. Require
+   no draft-ID reuse, no false published receipt, no automatic replay of an
+   uncertain final, and no cancellation of the current model run. Label this
+   supporting evidence as simulated; native client button placement and timing
+   still require the real walkthrough.
+
 ### TG5 — Token/webhook recovery
 
 Run only against a disposable bot or scheduled credential-rotation fixture:
