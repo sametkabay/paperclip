@@ -39,6 +39,18 @@ permissions and audit. Do not narrow completion to whichever tests pass.
 
 ## Current deployment
 
+**Cutover in progress:** server 76 was gracefully stopped at `08:46:53 UTC`
+after a fresh zero-active-run check (290 terminal); zero runs were interrupted.
+Private backup `pre-77-backup.RfChxI/pre-server-77-20260909-034715.sql.gz`
+is 8,720,075 bytes, 0600, gzip-verified, restore untested, zero pruned. Migration
+0259 applied successfully; live journal count is 258/up to date. Server 77 has
+not started: root caught that existing Telegram webhook subscriptions would
+not receive Stop until reconnect. The safe ordinary-output gate is now frozen,
+with seven genuine RED cases, 20/20 focused GREEN and plain types passing.
+Automatic subscription reconciliation remains the next slice. Do not deploy a
+visible Stop control without verified ingress.
+The table below is the last running server, not a claim it is currently online.
+
 Implementation `52a46cbf6` is pushed and deployed, adding Telegram retained-zero
 recovery fencing, bounded rich input and private callback notices, and removing
 artificial completed-response pacing. It includes the earlier Slack receipt,

@@ -59560,12 +59560,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   }
 
   describe("Telegram durable private draft Stop", () => {
-    async function draftFixture(reusedBotId?: number) {
+    async function draftFixture(
+      reusedBotId?: number,
+      webhookOk: unknown = true,
+    ) {
       const fixture = await seedCompany();
-      const initial = createService(
-        new FakeChatSdkRuntime(),
-        fakeTelegramFetch(reusedBotId) as typeof fetch,
-      );
+      const providerFetch = fakeTelegramFetch(reusedBotId);
+      const initial = createService(new FakeChatSdkRuntime(), (async (
+        input,
+        init,
+      ) => {
+        if (String(input).endsWith("/setWebhook"))
+          return Response.json({ ok: webhookOk, result: true });
+        return providerFetch(input, init);
+      }) as typeof fetch);
       const created = await initial.service.create(
         fixture.companyId,
         {
@@ -59674,6 +59682,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         });
         await pinned.initialize();
         Object.assign(context.runtime.endpoints.get(endpoint.id)!, {
+          thread: (threadId: string) => pinned.thread(threadId),
           handleWebhook: (...args: Parameters<typeof pinned.handleWebhook>) =>
             pinned.handleWebhook(...args),
           streamTelegramDraft: (
@@ -59934,6 +59943,89 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       }
     });
+
+    it.each(["missing", "bot", "generation", "fingerprint", "url"] as const)(
+      "sends ordinary complete output without Stop when subscription proof is %s",
+      async (changed) => {
+        const lane = await draftFixture();
+        try {
+          const [receipt] = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, lane.endpoint.id),
+                eq(chatActions.kind, "telegram_stop_subscription"),
+              ),
+            );
+          expect(receipt?.status).toBe("processed");
+          if (changed === "missing")
+            await db.delete(chatActions).where(eq(chatActions.id, receipt!.id));
+          else
+            await db
+              .update(chatActions)
+              .set({
+                payload: {
+                  ...receipt!.payload,
+                  ...(changed === "bot"
+                    ? { botUserId: String(lane.botId + 1) }
+                    : changed === "generation"
+                      ? {
+                          runtimeGeneration:
+                            Number(receipt!.payload.runtimeGeneration) + 1,
+                        }
+                      : changed === "fingerprint"
+                        ? { credentialFingerprint: "stale" }
+                        : { webhookUrlSha256: "0".repeat(64) }),
+                },
+              })
+              .where(eq(chatActions.id, receipt!.id));
+          const publication = await lane.send(`subscription-${changed}`);
+          expect(publication?.state).toBe("published");
+          expect(lane.requests).toHaveLength(1);
+          expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+          expect(JSON.stringify(lane.requests[0]!.body)).toContain(
+            `END-subscription-${changed}`,
+          );
+          expect(lane.requests[0]!.body.can_stop).toBeUndefined();
+          expect(await lane.actions()).toEqual([]);
+          expect(lane.context.cancelRun).not.toHaveBeenCalled();
+        } finally {
+          await lane.close();
+        }
+      },
+    );
+
+    it.each(["false", 1])(
+      "does not confirm a subscription from non-boolean ok=%s",
+      async (ok) => {
+        const lane = await draftFixture(undefined, ok);
+        try {
+          expect(
+            await db
+              .select()
+              .from(chatActions)
+              .where(
+                and(
+                  eq(chatActions.endpointId, lane.endpoint.id),
+                  eq(chatActions.kind, "telegram_stop_subscription"),
+                ),
+              ),
+          ).toEqual([]);
+          const publication = await lane.send("malformed-subscription");
+          expect(publication?.state).toBe("published");
+          expect(lane.requests).toHaveLength(1);
+          expect(lane.requests[0]!.method.endsWith("Draft")).toBe(false);
+          expect(JSON.stringify(lane.requests[0]!.body)).toContain(
+            "END-malformed-subscription",
+          );
+          expect(lane.requests[0]!.body.can_stop).toBeUndefined();
+          expect(await lane.actions()).toEqual([]);
+        } finally {
+          await lane.close();
+        }
+      },
+    );
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
       const lane = await draftFixture();

@@ -4610,3 +4610,40 @@ inventory was still 290 terminal/zero active, latest start `02:15:47.812`, and
 PostgreSQL was not in recovery. No live migration or new provider conversation
 has happened at this checkpoint. Runbook TG4a records the required actual
 client Stop journey separately from deterministic race coverage.
+
+### September 9: existing Telegram subscription upgrade guard
+
+After the preceding full pass, root found a deployment gap: only configure or
+reconnect sent the new `stopped_message_generation` subscription. An existing
+bot with an explicit older update list would advertise Stop but never deliver
+its callback. This is why the passing new-connection cases were insufficient.
+
+The safe first repair records a content-free subscription receipt only after
+the exact `setWebhook` request returns literal `ok: true` and `result: true`
+under the credential lease. It binds bot, current runtime generation, credential
+fingerprint and expected callback URL hash. Missing or stale proof leaves
+private Telegram on one ordinary complete final response—no Stop button and no
+uncontrolled process-local native draft. It does not strand normal replies or
+require an operator to reconnect. Automatic upgrade of existing subscriptions
+is the next maintenance slice; do not call that already implemented.
+
+Seven new cases genuinely failed without the guard. With it, all **20/20**
+Stop integration cases pass on fresh `chat_telegram_stop_gate_20260909_green01`
+in 8.47 seconds (812 unrelated cases skipped). These include missing proof,
+stale bot/generation/credential/URL scope and malformed boolean provider
+receipts, with actual pinned ordinary output retaining the complete tail and
+making no draft request. Logs: `telegram-stop-gate-{red,green,types}-0909.log`.
+Plain server types pass; unrelated formatting is preserved. This targeted
+repeat follows, rather than substitutes for, the preceding 825/31/348 pass.
+
+Server 76 was already stopped for cutover when root found the gap, so the
+restart was held until this guard was qualified. Its last inventory at
+`08:46:53.650 UTC` remained 290 terminal/zero active; graceful drain interrupted
+zero runs. The private stopped-DB backup is
+`pre-77-backup.RfChxI/pre-server-77-20260909-034715.sql.gz`, 8,720,075 bytes,
+directory 0700/file 0600, gzip-verified, restore untested, zero pruned. Migration
+0259 applied successfully, moving the live journal from 257 to 258/up to date.
+The live sequence is positive 31-bit/noncycling and still unallocated. The
+original four endpoints remain active; no credentials or historical run state
+were changed. Server 77 startup is the next action, with automatic subscription
+maintenance and actual provider UI qualification still open.

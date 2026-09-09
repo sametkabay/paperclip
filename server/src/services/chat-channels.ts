@@ -8651,12 +8651,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const result = (await response.json()) as {
           ok?: boolean;
           description?: string;
+          result?: unknown;
         };
         if (!response.ok || !result.ok)
           throw unprocessable(
             `Telegram could not register the webhook: ${result.description ?? response.status}`,
           );
         await credentialLease.assertOwned();
+        if (result.ok === true && result.result === true) {
+          // Telegram's successful boolean receipt acknowledges the exact URL,
+          // secret and allowed_updates request above. GET alone cannot prove
+          // secret_token, which Telegram deliberately does not return.
+          await recordTelegramStopSubscription(
+            next.endpoint,
+            runtimeContextForRecord(next),
+            credentialLease,
+          );
+        }
         // Command discovery is optional for ingress, but its provider mutation
         // is still a durable, auditable action. A transient or rate-limited
         // failure is retried by the maintenance worker without blocking the
@@ -30274,6 +30285,106 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  function telegramStopSubscriptionScope(
+    endpoint: EndpointRow,
+    context: LifecycleRuntimeFence,
+  ) {
+    if (
+      endpoint.provider !== "telegram" ||
+      !endpoint.botExternalId ||
+      !webhookPublicBaseUrl
+    )
+      return null;
+    const webhookUrlSha256 = createHash("sha256")
+      .update(
+        `${webhookPublicBaseUrl}/api/chat-webhooks/${endpoint.publicId}/telegram`,
+      )
+      .digest("hex");
+    return {
+      version: 1,
+      botUserId: endpoint.botExternalId,
+      runtimeGeneration: context.generation,
+      credentialFingerprint: context.credentialFingerprint,
+      webhookUrlSha256,
+    };
+  }
+
+  async function hasTelegramStopSubscription(
+    endpoint: EndpointRow,
+    context: LifecycleRuntimeFence,
+  ): Promise<boolean> {
+    const scope = telegramStopSubscriptionScope(endpoint, context);
+    if (!scope) return false;
+    const [receipt] = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.companyId, endpoint.companyId),
+          eq(chatActions.endpointId, endpoint.id),
+          eq(chatActions.kind, "telegram_stop_subscription"),
+          eq(
+            chatActions.providerActionId,
+            `telegram-stop-subscription:${scope.runtimeGeneration}:${scope.credentialFingerprint}:${scope.webhookUrlSha256}`,
+          ),
+          eq(chatActions.status, "processed"),
+        ),
+      )
+      .limit(1);
+    return (
+      !!receipt &&
+      receipt.result?.code === "telegram_stop_subscription_confirmed" &&
+      Object.keys(receipt.payload).length === Object.keys(scope).length &&
+      Object.entries(scope).every(
+        ([key, value]) => receipt.payload[key] === value,
+      )
+    );
+  }
+
+  async function recordTelegramStopSubscription(
+    endpoint: EndpointRow,
+    context: LifecycleRuntimeFence,
+    lease: CredentialMutationLeaseGuard,
+  ): Promise<void> {
+    const scope = telegramStopSubscriptionScope(endpoint, context);
+    if (!scope)
+      throw new Error("Telegram Stop subscription scope is unavailable");
+    await db.transaction(async (tx) => {
+      await lease.assertOwned(tx);
+      const current = await runtimeCallbackEndpoint(tx, endpoint.id, context, [
+        "verifying",
+        "active",
+      ]);
+      if (
+        !current ||
+        current.botExternalId !== scope.botUserId ||
+        current.publicId !== endpoint.publicId
+      )
+        throw new Error("Telegram Stop subscription ownership changed");
+      await tx
+        .insert(chatActions)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          kind: "telegram_stop_subscription",
+          providerActionId: `telegram-stop-subscription:${scope.runtimeGeneration}:${scope.credentialFingerprint}:${scope.webhookUrlSha256}`,
+          payload: scope,
+          status: "processed",
+          result: { code: "telegram_stop_subscription_confirmed" },
+        })
+        .onConflictDoUpdate({
+          target: [chatActions.endpointId, chatActions.providerActionId],
+          set: {
+            payload: scope,
+            status: "processed",
+            result: { code: "telegram_stop_subscription_confirmed" },
+            updatedAt: new Date(),
+          },
+        });
+      await lease.assertOwned(tx);
+    });
+  }
+
   async function handleTelegramGenerationStopped(
     callback: ChatSdkCallbackEvent<TelegramGenerationStoppedProof>,
     context: RuntimeContext,
@@ -30874,6 +30985,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       !input.replaceProviderMessageId &&
       !input.payload.transportPart &&
       CAPABILITIES[input.endpoint.provider].nativeStreaming &&
+      (input.endpoint.provider !== "telegram" ||
+        !input.conversation.isDirectMessage ||
+        input.telegramDraftControl !== undefined) &&
       shouldStreamSafePublicationText(text)
     ) {
       return await attemptProviderPublication(async () =>
@@ -34580,7 +34694,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 !payload.attachmentIds?.length &&
                 shouldStreamSafePublicationText(
                   renderPublicationTransportText(payload),
-                )
+                ) &&
+                (await hasTelegramStopSubscription(
+                  authorizationClaim.endpoint,
+                  currentPublicationRuntimeContext,
+                ))
                   ? await reserveTelegramPublicationDraft({
                       endpoint: authorizationClaim.endpoint,
                       conversation: authorizationClaim.conversation,
