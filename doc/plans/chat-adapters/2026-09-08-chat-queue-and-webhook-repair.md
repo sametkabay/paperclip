@@ -4259,3 +4259,202 @@ to report a locked Mac, although Discord login had been restored. This is
 deployment/configuration evidence, not proof of provider UX or completion.
 The current handoff also records the bounded read-only Telegram 10.3 audit's
 separate rich-input, ephemeral-identity and draft-stop qualification gaps.
+
+### September 9: remove artificial completed-response pacing
+
+The ready-publication producer inserted 75 ms between 280-code-point chunks
+even though the complete externally approved answer already existed. Actual
+pinned Slack and Telegram native/group adapter regressions observed ten such
+waits for a 2,880-character answer. This is 750 ms of avoidable requested
+producer delay, not an explanation for the historical minute-long delays
+before Express ingress. The original RED log is `ready-stream-red04-0909.log`
+(four failures, including the batching regression; 19 existing passes).
+
+The producer now defaults to zero delay and 2,000-code-point ordinary batches.
+Native adapter backpressure, Telegram draft/edit pacing, rate-limit handling,
+and awaited final receipts are unchanged. The stream receives only projected
+publishable text, never model reasoning or run/tool events. Explicit internal
+pacing options remain bounded and tested.
+
+Independent review found that a larger batch of cached Slack mentions could
+expand past the documented native limit: 1,996 source characters became a
+12,974-character chunk with a synthetic 21-character Slack ID. The actual
+pinned Web API buffer/serialization test reproduced that failure in
+`ready-stream-mention-red-0909.log`. Literal `@` and conservative `&` content
+therefore retain the prior 280-code-point batch. Encoded-mention probes did
+not expand in the current renderer; the ampersand guard is conservative.
+The separate existing unbroken-paragraph expansion case is not fixed here.
+
+The final six-file repeat passes **161/161** in 9.68 seconds
+(`ready-stream-final-0909.log`), including provider-sized cached mentions,
+Unicode/fences, ordinary paragraphs, Telegram rich drafts/group final pacing,
+projection, transport errors, text parts and published-adapter tests.
+The actual service safe-projection case passes on fresh isolated PostgreSQL
+(`ready-stream-joined01-0909.log`, 7.16 seconds); its larger fixture still
+asserts multiple bounded chunks and exclusion of private reasoning.
+The running server is still 75; this is not a live latency/UX qualification.
+Plain server types and targeted formatting passed. The isolated fix is
+committed/pushed as `a5ac8c7cc`; no runner/lockfile change was staged.
+
+### September 9: isolated PostgreSQL interruption and recovery
+
+The shared local PostgreSQL log records backend PID 23977 killed with SIGKILL
+at `07:49:34.230 UTC`, followed by automatic process restart/WAL recovery and
+readiness at `07:50:13.305`. The sender/cause of the signal is unknown; a narrow
+macOS log lookup did not identify it. Disk and current memory inspection did
+not show exhaustion. No manual database reset or server restart was performed.
+
+Boole's rich-content final-01 compatibility run failed all 32 cases at fixture
+seeding with `57P03`, before behavior assertions. Its log/database remain as
+failure evidence and were not reused. At `07:51:06.576`, root verified the
+database was no longer in recovery, server 75 returned healthy/ready, and
+the live inventory remained 290 terminal runs (262/26/2), zero active. The
+fresh final-02 compatibility repeat subsequently passed 32/32 in 7.46 seconds;
+the rich helper/runtime suite passed 96/96 and plain server types passed.
+
+### September 9: bounded rich input and private callback responses
+
+Committed/pushed `b9802d9e4`, not yet deployed. Boole's rich-input normalizer
+restores ordered quotation/credit/paragraph content and native rich document
+attachments before the pinned parser. Unknown, malformed, overly deep/large
+content produces an explicit omission; draft-only thinking and private button
+capabilities never enter the projection. Rich file paths, IDs, metadata,
+author/message/topic and source revision remain bound through restart and
+current-source rechecks. No generic unknown-document MIME allowance was added.
+
+James's private-notice transport is callback-only. Actual authenticated
+Telegram dispatch creates opaque immutable provenance; stored receipts alone
+do not confer send authority. Group replies use explicit recipient-bound
+ephemeral parameters, while verified exact-actor private chats retain ordinary
+DM notices. Both use fixed neutral text, current identity/reach/credential
+checks, and the first service-entry 15-second deadline. Neither unknown
+acceptance nor expiry permits public or unsolicited-DM fallback. Native
+ephemeral input cannot enter ordinary work under the reused `chat:0` identity;
+private commands and the generic ephemeral capability remain disabled.
+
+Independent review found and fixed two regressions: the initial implementation
+lost safe DM denial notices, and taking the clock after a slow body read could
+extend the window. Genuine RED→GREEN tests cover both. The clock also begins
+before service endpoint/lease/runtime-readiness awaits; a joined delayed-
+readiness case proves no extension. API receipts prove acceptance, not that a
+recipient's client displayed the message.
+
+Final fresh Telegram integration: **154/154**, 44.67 seconds
+(`telegram-private-all-telegram-final-0909.log`). New private plus retained
+legacy cases: **20/20**, 8.18 seconds
+(`telegram-private-service-clock-final-0909.log`). Runtime/helper/mock suite:
+**51/51**, 1.41 seconds (`telegram-private-runtime-final-0909.log`); plain
+server types passed. The actual webhook DM fixture now includes the required
+bot-authored source/receipt and a genuine same-ID retry; its one-notice and
+durable-write-failure 503 assertions remain. Invented action-only Telegram
+fixtures retain token/audit/continuation assertions but no longer assert a
+public fallback without authenticated provenance.
+
+A final read-only trace found a separate retained-input gap: older queued
+Telegram `chat:0` messages lose raw ephemeral markers during hydration, and
+processed deliveries with pending wakeups bypass hydration entirely. That
+targeted admission/wakeup repair is in progress before combined verification
+and deployment. No live rows are asserted to have that condition, and no
+historical input/comment/run was rewritten.
+
+### September 9: retained Telegram zero-source recovery fencing
+
+Older normalized Telegram message-ID-zero receipts could bypass the new
+authenticated ingress guard after restart, because hydration restores
+`raw: {}`. A processed receipt with a pending inbound wake also bypasses
+hydration. Genuine RED cases covered received/retry/stale-processing input
+and issued wake authority; positive and nonnumeric legacy controls remained
+admitted.
+
+The repair rejects exact numeric zero identities, independently retained
+zero sequence/event identities, and direct raw message ID zero. Cold recovery
+filters with a fixed reason before message/attachment hydration; a processed
+pending wake independently rechecks zero-source authority. Original normalized
+evidence, task/comment history and action payloads remain unchanged. Rejection
+cannot launch an agent, create work or publish provider feedback.
+
+Root found a precision flaw in the first filter: comparing a PostgreSQL
+microsecond timestamp against its JavaScript Date round trip could match no
+row, while still continuing settlement. An actual `123456`-microsecond
+regression failed with the receipt still processing
+(`telegram-zero-micros-red01-0909.log`). The final filter uses a scoped
+`FOR UPDATE NOWAIT` transaction, revalidates current source/state/thread and
+claim readiness, and requires `UPDATE RETURNING` plus successful commit before
+settlement/cache removal. Lock contention stops that drain; it does not settle
+another worker's action. A freshly committed claim and a replaced positive
+source are preserved.
+
+Fresh `chat_telegram_zero_micros_20260909_green01` passes **47/47** in 9.07
+seconds: 15 recovery cases and 32 adjacent rich/media cases
+(`telegram-zero-micros-green01-0909.log`). Plain server types pass
+(`telegram-zero-micros-types-final02-0909.log`). Independent review found no
+additional blocker. Root's separate 13-file helper/runtime repeat passes
+**298/298** in 14.70 seconds (`private-rich-helpers-root-0909.log`). Combined
+full integration and deterministic browser verification are still running;
+server 75 remains unchanged. No new live-provider UX is asserted.
+
+### September 9: confirmed remaining Slack rendered-chunk boundary
+
+James's bounded read-only probe used the actual pinned Slack adapter 4.39 and
+Web API 7.19 with the committed publication producer. An unbroken
+`@x `.repeat(900) paragraph plus a tail marker, with a normal-length cached
+Slack ID, expanded from 2,704 source characters to one 13,504-character native
+chunk despite source batches at most 280. A multi-paragraph control remained
+bounded. The renderer holds an incomplete paragraph until completion, then
+resolves cached mentions; the Web API streamer flushes the whole buffer.
+
+A local native stub enforcing Slack's documented 12,000-character boundary
+accepted an earlier prefix, then rejected the oversized chunk. The path threw
+without a final receipt or fallback. This is deterministic evidence of a
+remaining partial-response failure, not a live provider test. The narrow next
+repair is after mention resolution in the existing Slack adapter patch, with
+the Web API's pending buffer included in the bound. Preserve exact text,
+codepoints/provider tokens and per-fragment confirmed-send state so a later
+failure never duplicates an accepted prefix through fallback. No patch or
+installed dependency was changed during this read-only review.
+
+### September 9: combined regression and server 76 deployment
+
+Root's fresh `chat_private_rich_full_20260909_root01` passes **812/812** chat
+integration tests in 185.47 seconds (`private-rich-full-root-0909.log`). The
+separate fresh `chat_private_rich_browser_20260909_root01` passes **31/31**
+deterministic browser cases in 2.8 minutes
+(`private-rich-browser-root-0909.log`). The 13-file helper/runtime repeat
+passes **298/298**; shared/server/UI plain types pass. These suites simulate
+provider/model boundaries and do not qualify a new live conversation.
+
+Root preserved unrelated existing formatting in the large integration file
+and verified the new retained-zero section against Prettier. The final service
+and integration hashes exactly matched Boole's independently reviewed freeze.
+Service formatting and `git diff --check` pass. No full workspace build/test
+claim is made; the guarded native runner and CI-owned lockfile were not rebuilt
+or modified. Recovery fencing is committed/pushed as **`52a46cbf6`**, following
+the already-pushed rich/private and ready-output fixes.
+
+The live inventory at `08:14:57.129 UTC` remained 290 terminal runs (262
+succeeded, 26 failed, 2 cancelled), zero active, with latest start
+`02:15:47.812 UTC`. PostgreSQL was not in recovery. Root stopped only server
+75 PID 23408; its graceful drain interrupted zero runs and handle 4206 exited
+zero. The stopped database was backed up in private
+`pre-76-backup.gKWl0c/pre-server-76-20260909-031506.sql.gz`: 8,498,228 bytes,
+directory 0700/file 0600, gzip integrity passed, restore untested, zero backups
+pruned. Migration inspection was up to date, journal count 257; no migration,
+database reset or historical replay was performed.
+
+Server **76**, PID **45500**, handle **38031**, started at
+`08:15:25.777 UTC` and completed startup recovery at `08:15:29.173`.
+Its loaded version is **`2026.831.0+616.git.52a46cbf6.dirty`**; the suffix
+reflects only three in-progress documentation files, not uncommitted runtime
+source. Loopback and private Tailscale Board health returned 200/ready;
+public webhook-only Funnel Board health remained 404. Discord Gateway
+reconnected bot `1546330979860221952`. At `08:15:48.704`, the original four
+configured endpoints were active and the run inventory remained unchanged.
+Runner SHA256 `6279d39ac731e4565a638b64c93673b8ca23e6dfbc0870e24d48422497f1826d`
+and lockfile SHA256 `47a7c09302d47843054d0301f8f52f3da935b9c6ac771bace0409da752b6af7f`
+are unchanged. Proxy 27961 and the other checkout on 3103 were not touched.
+
+Live provider UI remains unverified for these changes: the in-app browser
+still reports a locked Mac, despite restored Discord login. Native Telegram
+generation-stop and the reproduced Slack rendered-paragraph limit remain
+open work. Teams still requires an eligible tenant. This is a verified
+deployment checkpoint, not completion or production-readiness certification.

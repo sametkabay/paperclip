@@ -503,6 +503,10 @@ Run C5 and C6, then verify specifically:
 
 - acknowledgement uses the approved reaction or a concise threaded receipt;
 - safe output uses Slack native streaming when available, otherwise one post edited at a bounded cadence;
+- completed, approved output has no simulated generation delay. Qualify both
+  ordinary paragraphs and cached `@name` expansion; each actual native payload
+  must fit provider limits and delivery must await the final receipt. This
+  does not establish model latency or explain delays before webhook ingress;
 - `FORM` uses Block Kit buttons/selects and a modal for the text field; modal submission applies once;
 - files ingest and publish without exposing Paperclip credentials;
 - an unauthorized action uses an ephemeral safe denial; any generic text fallback contains no private task/account details and does not open an unsolicited DM;
@@ -818,10 +822,18 @@ If Telegram upgrades an enabled basic group to a supergroup while Topics are ena
 Run C3, C5, and C6, then verify specifically:
 
 - Telegram shows typing/reaction acknowledgement where allowed;
-- long output uses throttled post/edit, and private draft preview only when explicitly supported by the adapter/account;
+- long output uses throttled post/edit, and private draft preview only when explicitly supported by the adapter/account. Already-complete approved text has no artificial generation pause; provider pacing and awaited final receipts still apply;
 - `FORM` uses inline keyboard buttons; fields that require a modal fall back to a Paperclip link or sequential prompts;
 - `/task <request>`, `/new`, `/status`, and `/close` are parsed as the documented small command vocabulary, and Paperclip registers that menu automatically;
 - image/document/media ingestion is bounded and type checked;
+- send a rich quotation beside ordinary paragraphs, then rich documents mixed
+  with photos and text. Verify complete ordered content, quotation credit,
+  original file bytes and the same task/topic after deferred intake/restart.
+  Edit or revoke the source during download and confirm no stale file is
+  registered. Unknown/malformed/deep rich blocks must produce a truthful
+  omission, never silently drop content or expose draft-only thinking/control
+  payloads. Use verified-webhook deterministic fixtures for provider shapes
+  that the installed client cannot compose; label those as simulated;
 - send voice, audio, video, animation and a Live Photo. Verify current-input
   originals on the same task and topic, including both Live Photo parts.
   Use signed-envelope deterministic fixtures when Telegram omits optional
@@ -831,9 +843,15 @@ Run C3, C5, and C6, then verify specifically:
   revoke or edit the source while a download is in flight;
 - reject a file above the configured attachment ceiling. Recovery guidance
   must name that deployment's actual limit, not a larger hard-coded size;
-- the current pinned adapter does not claim true ephemeral output; its denial
-  uses DM when possible or concise safe text. Telegram's newer native ephemeral
-  contract needs separate recipient-bound implementation and qualification;
+- an authenticated rejected inline-button action in a group uses Telegram's
+  recipient-only native callback response. Another participant must not see
+  it; missing/ambiguous receipts must not fall back to a group message or
+  unsolicited DM. Eligible private-chat callbacks retain their exact-actor DM
+  denial. Duplicate, delayed, restarted, revoked or cross-recipient actions
+  must not extend the original response deadline or send to another user;
+  API acceptance alone does not prove an online client displayed the notice.
+  Private commands remain disabled until their separate input-identity and
+  receipt contract is qualified;
 - callback data contains only an opaque short key and every click reauthorizes the Telegram principal;
 - flood-control retry honors provider timing and produces one final message.
 
@@ -997,21 +1015,21 @@ Slack Socket Mode and Telegram polling receive separate instance-admin smoke tes
 
 “Automatic” means the richest safe native behavior is used without an endpoint toggle. “Fallback” means the provider visibly receives the documented safe alternative.
 
-| Capability               | Slack                         | GitHub                              | Discord                                 | Teams                                         | Telegram                                |
-| ------------------------ | ----------------------------- | ----------------------------------- | --------------------------------------- | --------------------------------------------- | --------------------------------------- |
-| Root activation          | Native mention                | Mention in issue/PR/review          | Root bot mention                        | Native mention                                | DM message or group `/task@bot` command |
-| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Created Discord thread or DM generation | Channel post thread or chat generation        | Chat generation or forum topic          |
-| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic                               | Automatic where supported                     | Automatic where allowed                 |
-| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming  | Bounded post/edit; no native streaming        | Throttled post/edit; optional DM draft  |
-| Rich cards               | Block Kit                     | GFM + Paperclip link                | Discord embed                           | Adaptive Card                                 | Formatted text/inline keyboard          |
-| Buttons/selections       | Native                        | Fallback link                       | Native Gateway interaction              | Native card action                            | Inline keyboard                         |
-| Modal/form               | Native modal                  | Fallback link                       | Native modal                            | Task module                                   | Sequential prompt/link fallback         |
-| Commands                 | Registered slash command      | Text mention vocabulary only        | Registered `/paperclip status/new/close` | Card/message vocabulary                       | `/new`, `/status`, `/close`             |
-| Files                    | Native send/receive           | Scoped inbound uploads + task output link | Native send/receive              | Personal consent; channel/group pictures; task fallback | Native media/document          |
-| DM                       | Native                        | Unsupported                         | Native                                  | Personal scope                                | Native                                  |
-| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | DM, then safe text                      | Targeted, then DM/text                        | DM, then safe text                      |
-| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone                    | Correction/tombstone where delivered          | Correction/tombstone where delivered    |
-| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                        | Queue by default                              | Queue by default                        |
+| Capability               | Slack                         | GitHub                                    | Discord                                  | Teams                                                   | Telegram                                 |
+| ------------------------ | ----------------------------- | ----------------------------------------- | ---------------------------------------- | ------------------------------------------------------- | ---------------------------------------- |
+| Root activation          | Native mention                | Mention in issue/PR/review                | Root bot mention                         | Native mention                                          | DM message or group `/task@bot` command  |
+| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread           | Created Discord thread or DM generation  | Channel post thread or chat generation                  | Chat generation or forum topic           |
+| Reaction acknowledgement | Automatic                     | Automatic                                 | Automatic                                | Automatic where supported                               | Automatic where allowed                  |
+| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                       | Bounded post/edit; no native streaming   | Bounded post/edit; no native streaming                  | Throttled post/edit; optional DM draft   |
+| Rich cards               | Block Kit                     | GFM + Paperclip link                      | Discord embed                            | Adaptive Card                                           | Formatted text/inline keyboard           |
+| Buttons/selections       | Native                        | Fallback link                             | Native Gateway interaction               | Native card action                                      | Inline keyboard                          |
+| Modal/form               | Native modal                  | Fallback link                             | Native modal                             | Task module                                             | Sequential prompt/link fallback          |
+| Commands                 | Registered slash command      | Text mention vocabulary only              | Registered `/paperclip status/new/close` | Card/message vocabulary                                 | `/new`, `/status`, `/close`              |
+| Files                    | Native send/receive           | Scoped inbound uploads + task output link | Native send/receive                      | Personal consent; channel/group pictures; task fallback | Native media/document                    |
+| DM                       | Native                        | Unsupported                               | Native                                   | Personal scope                                          | Native                                   |
+| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link                     | DM, then safe text                       | Targeted, then DM/text                                  | Recipient-bound callback; exact-actor DM |
+| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                      | Correction/tombstone                     | Correction/tombstone where delivered                    | Correction/tombstone where delivered     |
+| Concurrent turns         | Queue by default              | Queue by default                          | Queue by default                         | Queue by default                                        | Queue by default                         |
 
 A stable adapter fails qualification if it silently omits a supported maximal feature, exposes a feature toggle that should be automatic, claims an unsupported native behavior, or falls back without preserving task identity, authorization, and safe publication.
 

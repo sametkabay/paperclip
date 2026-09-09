@@ -39,22 +39,22 @@ permissions and audit. Do not narrow completion to whichever tests pass.
 
 ## Current deployment
 
-Implementation `33b2be903` is pushed and deployed, adding bounded Slack receipt
-transport/cleanup and source-bound Telegram media to the earlier long-reply,
-Teams-picture, Discord-command and native recovery repairs. Teams pre-send
-guidance is corrected in `bc232f2b0`.
-Server **75** is running:
+Implementation `52a46cbf6` is pushed and deployed, adding Telegram retained-zero
+recovery fencing, bounded rich input and private callback notices, and removing
+artificial completed-response pacing. It includes the earlier Slack receipt,
+source-bound media, Teams-picture, Discord-command and native recovery repairs.
+Server **76** is running:
 
-| Field                    | Verified value                                                       |
-| ------------------------ | -------------------------------------------------------------------- |
-| PID / tool handle        | `23408` / `4206`                                                     |
-| Listener                 | `127.0.0.1:3137`                                                     |
-| Loaded server version    | `2026.831.0+612.git.33b2be903`                                         |
-| Started / recovery ready | `07:38:05.805` / `07:38:09.706 UTC`, September 9                        |
-| Native runner SHA256     | `6279d39ac731e4565a638b64c93673b8ca23e6dfbc0870e24d48422497f1826d`     |
+| Field                    | Verified value                                                          |
+| ------------------------ | ----------------------------------------------------------------------- |
+| PID / tool handle        | `45500` / `38031`                                                       |
+| Listener                 | `127.0.0.1:3137`                                                        |
+| Loaded server version    | `2026.831.0+616.git.52a46cbf6.dirty`                                    |
+| Started / recovery ready | `08:15:25.777` / `08:15:29.173 UTC`, September 9                        |
+| Native runner SHA256     | `6279d39ac731e4565a638b64c93673b8ca23e6dfbc0870e24d48422497f1826d`      |
 | Live DB                  | `chat_adapters_live_3103` on local PostgreSQL `55439`, role `paperclip` |
-| Last checked runs        | 290 terminal: 262 succeeded, 26 failed, 2 cancelled; zero active       |
-| Last new run             | September 9, `02:15:47.812 UTC`                                        |
+| Last checked runs        | 290 terminal: 262 succeeded, 26 failed, 2 cancelled; zero active        |
+| Last new run             | September 9, `02:15:47.812 UTC`                                         |
 
 Both loopback and private Tailscale health returned 200/ready. Public Funnel's
 Board-health GET remains 404. Discord Gateway reconnected bot
@@ -63,15 +63,19 @@ receipt for command `1547131713472430131` at `06:29:05.036 UTC`; the active
 endpoint now has both slash-command and ephemeral-message capability. This
 proves live provider registration, not invocation or private-response UX.
 The health response's Git commit is dynamic; use loaded version and process
-start to identify deployed code.
+start to identify deployed code. The loaded `.dirty` suffix reflects only
+three documentation files being updated during startup; runtime source was
+committed and its reviewed hashes matched.
 
-Server 74 exited cleanly after a fresh zero-active-run check at
-`07:37:35.378 UTC`. Its stopped database was backed up to private
-`pre-75-backup.PHjeDm/pre-server-75-20260909-023746.sql.gz`
-(8,246,249 bytes; directory 0700/file 0600; gzip integrity passed; restore not
+Server 75 exited cleanly after a fresh zero-active-run check at
+`08:14:57.129 UTC`; the graceful drain interrupted zero runs. Its stopped
+database was backed up to private
+`pre-76-backup.gKWl0c/pre-server-76-20260909-031506.sql.gz`
+(8,498,228 bytes; directory 0700/file 0600; gzip integrity passed; restore not
 tested; no backup pruned). No migration was needed: journal count 257, up to
 date. No credentials or historical recovery records were rewritten.
-At `07:38:31.515 UTC`, the run inventory remained 290 terminal, zero active.
+At `08:15:48.704 UTC`, the run inventory remained 290 terminal, zero active,
+and the original Discord/GitHub/Slack/Telegram endpoints remained active.
 The qualified runner and lockfile SHA256 values are unchanged.
 
 Private Board: `https://dottas-macbook-pro.tail29c1aa.ts.net`.
@@ -91,8 +95,8 @@ All local runtime material is under ignored
 `.paperclip-runtime/chat-adapters-live/`, including:
 
 - `start-server.sh`: configured isolated startup, no embedded credentials.
-- `server-experimental-landing-75.log`: current server log.
-- `pre-server-75-backup-0909.log`: private backup/schema metadata.
+- `server-experimental-landing-76.log`: current server log.
+- `pre-server-76-backup-0909.log`: private backup/schema metadata.
 - `qualified-runnerd-2400740c`: preserved old qualified runner backup.
 - `home/instances/chat-adapters-live/runtime/paperclip-runner/durable-sessions`:
   live native roots; do not manipulate historical evidence.
@@ -106,7 +110,7 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 ## Immediate next actions
 
-1. **Resume real browser qualification on server 75.** Latest actual browser
+1. **Resume real browser qualification on server 76.** Latest actual browser
    inventory reports **Mac locked**; the user has been asked to unlock it.
    Discord login was restored before the lock. Do not request Discord login
    again unless the actual provider page requires it.
@@ -135,7 +139,7 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 **Current follow-up:** the restored Discord login is not the current gate:
 the in-app browser tool still reports that the Mac is locked. Read-only health
-confirms server 75 is ready and the original four configured endpoints remain
+confirms server 76 is ready and the original four configured endpoints remain
 active; that is not a new live conversation. Slack receipt contention/cleanup
 and Telegram optional-MIME/Live Photo repairs are now frozen and independently
 reviewed. Slack's final joined repeat passes 10/10, and Telegram's repaired
@@ -152,28 +156,80 @@ component suite passes 27/27; two deterministic file-consent browser cases pass
 on fresh `chat_teams_guidance_browser_20260909_root01` in 14.1 seconds. Root
 inspected the rendered guidance screenshot; it fits without clipping. Provider
 publication is simulated in those tests. Token gates and targeted formatting
-pass. This does not qualify live Teams or the pending Slack/Telegram changes.
+pass. This does not qualify live Teams or the deployed Slack/Telegram repairs.
 
-**Next provider-version work:** the [current Telegram Bot API contract](https://core.telegram.org/bots/api#recent-changes)
+**In-progress provider-version work:** the [current Telegram Bot API contract](https://core.telegram.org/bots/api#recent-changes)
 includes changes absent from the pinned adapter. A bounded read-only audit
 confirmed rich Markdown output and private drafts already work; do not list
 those as missing. Actual pinned-parser probes found three separate gaps:
 
-- API 10.3 `expandable_blockquote` and rich `document` input can disappear,
-  including a dropped quotation beside a supported paragraph. Next add exact
-  parser → service text/file/restart cases and truthful unsupported omissions.
-- Native ephemeral transport is absent, and distinct ephemeral message IDs
-  with `message_id: 0` collapse to one ordinary message identity. Keep private
-  commands disabled until recipient-bound transport, update identity, deadline,
-  retry and no-cross-recipient/public-fallback guarantees are qualified.
+- API 10.3 `expandable_blockquote` and rich `document` input disappeared,
+  including a quotation beside a supported paragraph. Boole's inbound-only
+  normalizer now passes the three original parser/service failures plus seven
+  mixed-file/restart/topic/edit/revocation/dedup cases. It is independently
+  reviewed; the fresh broader compatibility repeat passes 32/32. Unsupported or
+  malformed content receives an explicit omission. Draft-only thinking and
+  private button capabilities are never projected.
+- James completed callback-only native ephemeral denial notices. The
+  actual pinned runtime now rejects ephemeral messages/commands from ordinary
+  `chat:0` admission and captures authenticated, recipient-bound callback
+  provenance. Service-entry deadline, deduplication, current-authority and
+  no-public-fallback regressions pass, including preserved exact-actor DM
+  notices. The final Telegram cohort passes 154/154, helper/runtime 51/51 and
+  plain server types. Private commands remain off.
 - Native generation-stop updates are neither subscribed nor dispatched, and
   draft IDs are process-local. First distinguish stopping the presentation of
   already-approved output from cancelling a live model run; require durable
   exact draft/publication ownership. Never cancel whichever run is current.
 
-These are next-pass implementation/qualification gaps, not newly shipped
-features. Preserve recipient/source authority and never expose raw model
-thinking merely because a provider offers a thinking block.
+Rich input and private callback fixes are committed/pushed as `b9802d9e4` and
+deployed on server 76. Final recovery review found that **old queued Telegram
+`chat:0` input** could bypass the new ingress guard when rehydrated with `raw: {}`;
+an already-processed delivery with a pending wake also bypassed hydration.
+Boole completed fixed-reason retained-source filtering and an independent
+wakeup-authority guard, with positive-ID/legacy controls and no history
+rewrites. Root reproduced a PostgreSQL microsecond timestamp CAS failure in
+the initial filter. The repaired path locks and revalidates the current row,
+and settles work only after a confirmed filter commit. Held claims and a
+concurrently replaced positive source remain protected. The fresh final
+cohort passes 47/47, including 15 recovery cases and 32 adjacent rich/media
+cases; plain server types and independent review pass. Root's combined
+helper/runtime suite passes 298/298. Full integration passes **812/812** on
+fresh `chat_private_rich_full_20260909_root01` in 185.47 seconds; deterministic
+browser checks pass **31/31** on separate fresh
+`chat_private_rich_browser_20260909_root01` in 2.8 minutes. Shared/server/UI
+plain types pass. Recovery fencing is committed/pushed as `52a46cbf6` and
+deployed on server 76. These are not new live-provider conversations.
+Native generation-stop remains unimplemented. Preserve recipient/source
+authority and never expose raw model thinking merely because a provider
+offers a thinking block.
+
+**Ready-output latency repair (`a5ac8c7cc`, pushed, deployed on server 76):** completed, approved
+publication text no longer needs simulated 75-ms generation pauses. Ordinary
+text uses bounded 2,000-code-point batches; `@`/`&` content retains the prior
+280-code-point batch because Slack resolves cached mentions after rendering.
+Review reproduced a 12,974-character native chunk with a larger mention batch;
+the conservative guard keeps that case within the provider limit. The separate
+preexisting case of one unbroken paragraph expanding past the native limit
+still needs a provider-rendered boundary fix. Do not mistake this small output
+latency improvement for explaining the historical pre-ingress minute delays.
+The six-file focused repeat passes 161/161 and the real-service safe-projection
+case passes; provider pacing/final-receipt paths remain intact. No live UX claim.
+James independently reproduced the remaining defect with the real pinned
+adapter and a normal cached Slack user ID: a 2,704-character unbroken paragraph
+became one 13,504-character native chunk. A strict local transport accepted a
+prefix, then rejected the oversized chunk without a final receipt. The next
+fix belongs after mention resolution in the adapter flush, including the
+Web API's pending buffer; reducing source chunks cannot fix paragraph buffering.
+Do not claim this case repaired or live-qualified.
+
+**Local database interruption:** PostgreSQL logged backend PID 23977 killed by
+SIGKILL at `07:49:34.230 UTC`, then recovered automatically and accepted
+connections at `07:50:13.305`. The source of that signal is unproved. The rich
+final-01 run failed during fixture seeding (32/32), not behavior assertions;
+retain its log and use a new fixture database. At `07:51:06.576`, root verified
+`pg_is_in_recovery = false`, server 75 healthy and the same 290 terminal runs,
+zero active. No database reset, server restart or historical replay was used.
 
 **Deployed in `cfbda24be` on server 74:** a bounded parallel acceptance
 audit found two gaps beyond the browser lock. Explicit Board publication accepted
@@ -481,13 +537,13 @@ Maya E2E `31f56712-3944-423e-b7c7-404bb8fbb993`, company
 substituted. Effective reasoning effort is not yet proved; the old configured
 low field is outside the native v4 contract. Do not claim it is running low effort.
 
-| Provider | Latest useful real evidence                                                                                                           | Still missing                                                                     |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Discord  | Server 68 same-thread image/TXT return on CHA-32; both previews and full TXT inspected, one attempt per output; bot reconnected on 75 | Live repeat on current deployment, remaining runbook cases, second-process takeover |
+| Provider | Latest useful real evidence                                                                                                           | Still missing                                                                          |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Discord  | Server 68 same-thread image/TXT return on CHA-32; both previews and full TXT inspected, one attempt per output; bot reconnected on 75 | Live repeat on current deployment, remaining runbook cases, second-process takeover    |
 | Slack    | Server 68 same-thread image/TXT return on CHA-33; exact received bytes retained; live edited-source reuse denied                      | Live repeat on current deployment, remaining lifecycle/governance/failure permutations |
-| GitHub   | Server 68 honest unavailable-private-file reply, followed by correct pasted-text answer on the same session                           | New safe task-link → task-upload live journey and remaining runbook cases         |
-| Telegram | Earlier real text/media/reaction/backlog cases; accepted CHA-26 image answer later delivered without another model run                | Exact failed document-B recovery and remaining file/interaction/performance cases |
-| Teams    | Deterministic personal-file consent, channel/group pictures, progress, actions, access and safe file-link coverage                     | Actual qualified tenant setup and live provider journeys                          |
+| GitHub   | Server 68 honest unavailable-private-file reply, followed by correct pasted-text answer on the same session                           | New safe task-link → task-upload live journey and remaining runbook cases              |
+| Telegram | Earlier real text/media/reaction/backlog cases; accepted CHA-26 image answer later delivered without another model run                | Exact failed document-B recovery and remaining file/interaction/performance cases      |
+| Teams    | Deterministic personal-file consent, channel/group pictures, progress, actions, access and safe file-link coverage                    | Actual qualified tenant setup and live provider journeys                               |
 
 Real media repeats on server 68 were descriptive, not a controlled speed claim:
 Discord run `265d35e0-af1e-421b-b3e2-61ba65fcc288` took 60.073 seconds,
