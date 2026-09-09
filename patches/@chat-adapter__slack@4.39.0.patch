@@ -1,8 +1,8 @@
 diff --git a/dist/index.js b/dist/index.js
-index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499f59a801b 100644
+index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909a36c143d 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -2154,6 +2154,7 @@ var SlackAdapter = class _SlackAdapter {
+@@ -2154,6 +2154,7 @@
      const command = params.get("command") || "";
      const text = params.get("text") || "";
      const userId = params.get("user_id") || "";
@@ -10,7 +10,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
      const channelId = params.get("channel_id") || "";
      const triggerId = params.get("trigger_id") || void 0;
      this.logger.debug("Processing Slack slash command", {
-@@ -2163,14 +2164,13 @@ var SlackAdapter = class _SlackAdapter {
+@@ -2163,14 +2164,13 @@
        channelId,
        triggerId
      });
@@ -27,7 +27,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
          isBot: false,
          isMe: false
        },
-@@ -2179,6 +2179,9 @@ var SlackAdapter = class _SlackAdapter {
+@@ -2179,8 +2179,11 @@
        triggerId,
        channelId: channelId ? `slack:${channelId}` : ""
      };
@@ -39,7 +39,9 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
 +      text: "Paperclip received this command."
 +    });
    }
-@@ -2703,7 +2705,8 @@ var SlackAdapter = class _SlackAdapter {
+   /**
+    * Handle block_actions payload (button clicks in Block Kit).
+@@ -2706,7 +2709,8 @@
            "Content-Type": "application/json",
            "x-slack-socket-token": this.socketForwardingSecret
          },
@@ -49,7 +51,8 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
        });
        if (response.ok) {
          this.logger.debug("Socket event forwarded successfully", {
-@@ -2895,7 +2899,18 @@ var SlackAdapter = class _SlackAdapter {
+@@ -2894,8 +2898,19 @@
+       }
      }
      const previousMessage = event.previous_message;
 +    // File edits can retain both text and edited.ts. Compare only attachment
@@ -69,7 +72,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
      );
      if (event.hidden === true && !isHiddenMessageEdit) {
        return;
-@@ -3900,17 +3904,22 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3900,17 +3915,22 @@
      const { channel, threadTs: rawThreadTs } = this.decodeThreadId(threadId);
      const threadTs = rawThreadTs || void 0;
      try {
@@ -96,7 +99,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
            };
          }
        }
-@@ -3946,7 +3950,7 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3946,7 +3966,7 @@
          return {
            id: result2.ts,
            threadId,
@@ -105,7 +108,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
          };
        }
        const payload = this.formatConverter.toSlackPayload(message);
-@@ -3971,7 +3975,7 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3971,7 +3991,7 @@
        return {
          id: result.ts,
          threadId,
@@ -114,7 +117,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
        };
      } catch (error) {
        this.handleSlackError(error);
-@@ -4190,7 +4194,7 @@ var SlackAdapter = class _SlackAdapter {
+@@ -4183,7 +4203,7 @@
     * Upload files to Slack and share them to a channel.
     * Returns the file IDs of uploaded files.
     */
@@ -123,7 +126,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
      const bufferResults = await Promise.all(
        files.map(async (file) => {
          try {
-@@ -4205,7 +4209,9 @@ var SlackAdapter = class _SlackAdapter {
+@@ -4205,7 +4225,9 @@
        (result2) => result2 !== null
      );
      if (fileUploads.length === 0) {
@@ -134,7 +137,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
      }
      this.logger.debug("Slack API: files.uploadV2 (batch)", {
        fileCount: fileUploads.length,
-@@ -4219,14 +4225,157 @@ var SlackAdapter = class _SlackAdapter {
+@@ -4219,15 +4241,158 @@
      const result = await this._client.files.uploadV2(uploadArgs);
      this.logger.debug("Slack API: files.uploadV2 response", { ok: result.ok });
      const fileIds = [];
@@ -188,7 +191,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
 +      );
 +    }
 +    return { fileIds, messageId };
-+  }
+   }
 +  async paperclipResolveFileUploadReceipt(fileIds, threadId) {
 +    if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 20 || new Set(fileIds).size !== fileIds.length || fileIds.some((fileId) => typeof fileId !== "string" || !/^F[A-Z0-9]{1,254}$/.test(fileId))) {
 +      const error = new Error("Slack file upload receipt is invalid");
@@ -293,10 +296,219 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6ed9ad56712e09558d0ba26ad8a32499
 +      (messageId) => rest.every((messageIds) => messageIds.has(messageId))
 +    );
 +    return sharedMessageIds.length === 1 ? sharedMessageIds[0] : null;
-   }
++  }
    async editMessage(threadId, messageId, _message) {
      const message = await this.resolveMessageMentions(_message, threadId);
-@@ -5636,6 +5755,7 @@ var SlackAdapter = class _SlackAdapter {
+     const ephemeral = this.decodeEphemeralMessageId(messageId);
+@@ -4622,6 +4787,8 @@
+     this.logger.debug("Slack: starting stream", { channel, threadTs });
+     const token = await this.getToken();
+     const streamer = this._client.chatStream({
++      // Keep the Web API's batching, but account for its pending tail below.
++      buffer_size: 256,
+       channel,
+       thread_ts: threadTs,
+       ...options?.recipientUserId && {
+@@ -4667,6 +4834,72 @@
+       }
+     };
+     const fallback = { message: null, mode: "native", nativeRendered: false };
++    let nativePendingLength = 0;
++    let nativeMessageTs = null;
++    const nativeDeliveryUnknown = () => new NetworkError(
++      "slack",
++      "Slack native stream delivery could not be confirmed"
++    );
++    const confirmNativeResponse = (response) => {
++      if (response?.ok !== true || typeof response.ts !== "string" ||
++          response.ts.length > 128 || !/^\d+\.\d+$/.test(response.ts) ||
++          response.channel !== void 0 && response.channel !== channel ||
++          nativeMessageTs !== null && response.ts !== nativeMessageTs ||
++          response.message?.ts !== void 0 && response.message.ts !== response.ts) {
++        throw nativeDeliveryUnknown();
++      }
++      nativeMessageTs = response.ts;
++      fallback.nativeRendered = true;
++      nativePendingLength = 0;
++    };
++    const appendNative = async (args) => {
++      const response = await streamer.append({ ...args, token });
++      if (response === null) {
++        nativePendingLength += args.markdown_text?.length ?? 0;
++      } else {
++        // Record each awaited receipt before another fragment can fail.
++        confirmNativeResponse(response);
++      }
++    };
++    const appendRendered = async (delta) => {
++      let part = "";
++      // Preserve complete Slack links/mentions, escaped entities and Unicode
++      // scalars. Never silently truncate or split an oversized opaque token.
++      for (const [atom] of delta.matchAll(/<[^<>\r\n]*>|&(?:amp|lt|gt);|[\s\S]/gu)) {
++        if (atom.length > 12e3) {
++          throw new ValidationError("slack", "Rendered Slack token exceeds the native stream limit");
++        }
++        if (nativePendingLength + part.length + atom.length > 12e3) {
++          if (part.length > 0) {
++            await appendNative({ markdown_text: part });
++            part = "";
++          }
++          if (nativePendingLength + atom.length > 12e3) {
++            // A whole token fits, but not alongside the Web API's <256 tail.
++            await appendNative({ chunks: [] });
++          }
++        }
++        part += atom;
++      }
++      if (part.length > 0) {
++        await appendNative({ markdown_text: part });
++      }
++    };
++    const definiteNativeUnsupported = (error) => {
++      const code = slackPlatformErrorCode(error);
++      return error?.data?.ok === false && code !== void 0 && NATIVE_STREAMING_UNSUPPORTED_ERRORS.has(code);
++    };
++    const rethrowNativeFailure = (error) => {
++      // A later explicit rejection does not undo an already accepted prefix.
++      // Do not expose its retryable/definite code as the whole send's outcome.
++      const code = slackPlatformErrorCode(error);
++      if (fallback.nativeRendered || fallback.message !== null ||
++          error?.code === "slack_webapi_platform_error" && error.data?.ok !== false ||
++          code === "internal_error" || code === "fatal_error") {
++        throw nativeDeliveryUnknown();
++      }
++      throw error;
++    };
+     const updateIntervalMs = options?.updateIntervalMs ?? 1e3;
+     let fallbackSent = "";
+     let lastFallbackEditAt = 0;
+@@ -4709,17 +4942,11 @@
+         return;
+       }
+       try {
+-        const response = await streamer.append({
+-          markdown_text: delta,
+-          token
+-        });
+-        if (response) {
+-          fallback.nativeRendered = true;
+-        }
++        await appendRendered(delta);
+         lastAppended = resolvedCommitted;
+       } catch (error) {
+-        if (fallback.nativeRendered) {
+-          throw error;
++        if (fallback.nativeRendered || !definiteNativeUnsupported(error)) {
++          rethrowNativeFailure(error);
+         }
+         switchToFallback(error);
+         await flushFallback(force);
+@@ -4736,12 +4963,15 @@
+         return;
+       }
+       try {
+-        await streamer.append({
+-          chunks: [chunk],
+-          token
+-        });
+-        fallback.nativeRendered = true;
++        await appendNative({ chunks: [chunk] });
+       } catch (error) {
++        const code = slackPlatformErrorCode(error);
++        if (fallback.nativeRendered || error?.data?.ok !== false || ![
++          "invalid_chunks", "invalid_blocks", "missing_scope",
++          ...NATIVE_STREAMING_UNSUPPORTED_ERRORS
++        ].includes(code)) {
++          rethrowNativeFailure(error);
++        }
+         structuredChunksSupported = false;
+         this.logger.warn(
+           "Structured streaming chunk failed, falling back to text-only streaming. Ensure your Slack app manifest includes the agent/assistant feature and the assistant:write scope",
+@@ -4749,22 +4979,28 @@
+         );
+       }
+     };
+-    for await (const chunk of textStream) {
+-      if (options?.signal?.aborted) {
+-        break;
++    try {
++      for await (const chunk of textStream) {
++        if (options?.signal?.aborted) {
++          break;
++        }
++        if (typeof chunk === "string") {
++          renderer.push(chunk);
++          await flushCommitted();
++        } else if (chunk.type === "markdown_text") {
++          renderer.push(chunk.text);
++          await flushCommitted();
++        } else {
++          await sendStructuredChunk(chunk);
++        }
+       }
+-      if (typeof chunk === "string") {
+-        renderer.push(chunk);
+-        await flushCommitted();
+-      } else if (chunk.type === "markdown_text") {
+-        renderer.push(chunk.text);
+-        await flushCommitted();
+-      } else {
+-        await sendStructuredChunk(chunk);
+-      }
++      renderer.finish();
++      await flushCommitted(true);
++    } catch (error) {
++      // Iterator/renderer/mention lookup failures also follow an irreversible
++      // accepted native prefix; never classify them as safe whole-send retry.
++      rethrowNativeFailure(error);
+     }
+-    renderer.finish();
+-    await flushCommitted(true);
+     if (fallback.mode === "fallback") {
+       if (options?.stopBlocks || this.feedbackButtons) {
+         this.logger.warn(
+@@ -4775,7 +5011,7 @@
+       this.logger.debug("Slack: fallback stream complete", {
+         messageId: fallback.message?.id
+       });
+-      await this.endTyping(threadId, options?.sessionStatus ?? "active");
++      await this.endTyping(threadId, options?.sessionStatus ?? "active").catch(rethrowNativeFailure);
+       return fallback.message;
+     }
+     const stopBlocks = [
+@@ -4784,21 +5020,27 @@
+     ];
+     let result;
+     try {
++      if (!fallback.nativeRendered) {
++        // Observe the initial receipt even when all text is still buffered;
++        // stop() otherwise hides its internal startStream response.
++        await appendNative({ chunks: [] });
++      }
+       result = await streamer.stop({
+         token,
+         ...this.agentView ? { session_status: options?.sessionStatus ?? "active" } : {},
+         ...stopBlocks.length > 0 ? { blocks: stopBlocks } : {}
+       });
++      confirmNativeResponse(result);
+     } catch (error) {
+-      if (fallback.nativeRendered) {
+-        throw error;
++      if (fallback.nativeRendered || !definiteNativeUnsupported(error)) {
++        rethrowNativeFailure(error);
+       }
+       switchToFallback(error);
+       await flushFallback(true);
+       this.logger.debug("Slack: fallback stream complete", {
+         messageId: fallback.message?.id
+       });
+-      await this.endTyping(threadId, options?.sessionStatus ?? "active");
++      await this.endTyping(threadId, options?.sessionStatus ?? "active").catch(rethrowNativeFailure);
+       return fallback.message;
+     }
+     const messageTs = result.message?.ts ?? result.ts;
+@@ -5636,7 +5878,8 @@
+     const response = await fetch(responseUrl, {
        method: "POST",
        headers: { "Content-Type": "application/json" },
 -      body: JSON.stringify(payload)

@@ -4496,3 +4496,45 @@ not a full built-server clean installation or the in-progress newer Slack and
 Telegram patches. Live node_modules, server 76, the guarded runner and
 CI-owned lockfile were not changed. Full clean-install/lockfile reconciliation
 remains a release prerequisite.
+
+### September 9: Slack rendered stream bounded after mention resolution
+
+The final pinned-adapter baseline fails 28 cases and passes 10; the candidate
+passes all 38. The repair splits the rendered output after mention resolution,
+accounts for Web API buffered tails and preserves exact text, Unicode scalars,
+Slack tokens and escaped entities. An indivisible oversized token fails before
+its send. Once any prefix is accepted, subsequent iterator, rendering, lookup,
+append or stop failures remain ambiguous delivery rather than replayable failure.
+
+Native start, append and stop receipts must be coherent: explicit success,
+nonempty numeric timestamp, consistent message identity and matching channel
+when provided. The first start receipt is checked even when all content remains
+buffered. Unsupported-method fallback requires an explicit coherent provider
+rejection before any effect; a malformed HTTP-success error body cannot trigger
+a second send. Independent review supplied two genuine regressions for those
+partial-prefix and malformed-error boundaries.
+
+Candidate and adjacent checks pass 106/106; plain server types pass. Root
+backed up the installed single-link Slack leaf and applied only the reviewed
+delta with `apply_patch`. It exactly matches candidate SHA256
+`79040db22140a2969eb4c5d0e93334e2e1c632615608b2c8a474901f5c2354f2`.
+The default-import installed-adapter repeat passes **192/192** across six files
+in 8.44 seconds (`slack-rendered-installed-root01-0909.log`). This is stronger
+than a candidate override but is still deterministic SDK/provider-stub evidence.
+Server 76 has not been restarted; do not call this fix deployed. The guarded
+runner and CI-owned lockfile hashes remain unchanged.
+
+James independently downloaded the pristine public Slack 4.39.0 tarball,
+verified npm's SHA512 and applied the full patch with the production bundle
+helper in isolated `slack-release-final.HcIlHL`. The resulting entry point
+matches `79040db2…`; packaging contracts pass 22/22 and real SDK checks pass
+38/38. A real npm 10.9.7 pack/extract contains all seven bundled packages;
+Slack and its Web API/shared/chat dependencies resolve inside that archive,
+and the same 38 checks pass from the extracted bytes. Logs are
+`slack-release-{packaging-tests,helper,staged-stream-green,archive-inspect-final,archive-stream-green}-0909.log`.
+This still uses the minimal server-entry fixture, not a new production server
+build, and other adapters retain the prior frozen patch baseline.
+
+The user reported restoring Discord login. The actual browser controller still
+returned a locked Mac, not a provider login page; root requested an unlock and
+continued the independent code/test lanes. No new Discord journey is asserted.

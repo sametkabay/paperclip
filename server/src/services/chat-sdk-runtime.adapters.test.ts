@@ -1090,7 +1090,7 @@ describe("Chat SDK published adapter integration", () => {
       const nativeAppend = vi.fn(async () => {
         throw Object.assign(new Error("native streaming unavailable"), {
           code: "slack_webapi_platform_error",
-          data: { error: "unknown_method" },
+          data: { ok: false, error: "unknown_method" },
         });
       });
       const nativeStop = vi.fn(async () => ({ ok: true, ts: "1788.999" }));

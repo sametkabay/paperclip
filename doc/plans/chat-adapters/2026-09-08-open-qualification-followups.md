@@ -137,9 +137,13 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 ## Current parallel work and audit conclusions
 
-**Current additional work:** James is implementing the reproduced Slack
-rendered-paragraph boundary, including ambiguous/missing native receipts and
-partial-send replay safety. Boole is implementing native Telegram Stop as
+**Current additional work:** James's Slack rendered-paragraph repair is frozen
+and independently reviewed. Root staged the exact candidate in this checkout's
+installed adapter; default-import regression passes 192/192. Server 76 has not
+been restarted, so this is not deployed or live-provider proof. The repair
+bounds post-mention-resolution payloads including the SDK's pending buffer,
+validates coherent native receipts and prevents fallback after ambiguous or
+partial delivery. Boole is implementing native Telegram Stop as
 stopping the exact private draft presentation, never cancelling a current
 task/run. Durable draft ownership and final-send arbitration are required;
 neither candidate is deployed yet. Root repaired the server's release bundle
