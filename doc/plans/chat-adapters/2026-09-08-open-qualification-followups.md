@@ -137,6 +137,18 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 ## Current parallel work and audit conclusions
 
+**Current additional work:** James is implementing the reproduced Slack
+rendered-paragraph boundary, including ambiguous/missing native receipts and
+partial-send replay safety. Boole is implementing native Telegram Stop as
+stopping the exact private draft presentation, never cancelling a current
+task/run. Durable draft ownership and final-send arbitration are required;
+neither candidate is deployed yet. Root repaired the server's release bundle
+manifest so all five adapter patches and the Discord transport patch ship to
+npm consumers. Packaging contracts pass 22/22; an isolated production-helper
+stage at patch snapshot `1a0a77025` applied every patch and confirmed Discord
+uses the patched transport. This is not a full server install or proof of the
+new candidates; clean-install/lockfile reconciliation remains open.
+
 **Current follow-up:** the restored Discord login is not the current gate:
 the in-app browser tool still reports that the Mac is locked. Read-only health
 confirms server 76 is ready and the original four configured endpoints remain

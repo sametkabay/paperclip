@@ -50,6 +50,7 @@
     "@chat-adapter/slack": "4.39.0",
     "@chat-adapter/teams": "4.39.0",
     "@chat-adapter/telegram": "4.39.0",
+    "@discordjs/ws": "1.2.3",
     "@opentelemetry/api": "^1.9.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -92,6 +93,12 @@
     "zod": "^4.4.3"
   },
   "bundleDependencies": [
+    "@chat-adapter/discord",
+    "@chat-adapter/github",
+    "@chat-adapter/slack",
+    "@chat-adapter/teams",
+    "@chat-adapter/telegram",
+    "@discordjs/ws",
     "acpx"
   ],
   "devDependencies": {

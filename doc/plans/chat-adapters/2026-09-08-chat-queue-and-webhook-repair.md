@@ -4458,3 +4458,41 @@ still reports a locked Mac, despite restored Discord login. Native Telegram
 generation-stop and the reproduced Slack rendered-paragraph limit remain
 open work. Teams still requires an eligible tenant. This is a verified
 deployment checkpoint, not completion or production-readiness certification.
+
+### September 9: preserve chat patches in the published server package
+
+Root and independent review confirmed a release-path gap: the server bundled
+only ACPX. `createBundledInstallManifest` removes other dependencies during
+bundle staging, and `selectBundledDependencyPatches` applies patches only to
+bundled package names. npm consumers do not inherit this repository's pnpm
+patch policy, so ordinary dependency installation would lose the five adapter
+patches and Discord transport patch.
+
+Seven new contract checks failed before the manifest repair
+(`chat-packaging-red-0909.log`). The server now bundles all five exact 4.39.0
+adapters plus an explicit exact `@discordjs/ws@1.2.3`, retaining ACPX. Tests
+require every configured patch to be selected, preserved in the publish
+manifest and passed to the corresponding staging target, and reject a wrong
+transport version. The existing vendored-runner fixture was extended for the
+additional bundled packages without dropping its ACPX assertions. Final
+packaging checks pass **22/22** (`chat-packaging-final-0909.log`).
+
+For stronger artifact evidence, root used the actual production staging
+helper in isolated `chat-release-stage-OMXfFR`, with a minimal application
+entry point, the changed server manifest, and a frozen snapshot of patches
+at `1a0a77025`. npm installed 290 packages with lifecycle scripts disabled;
+all seven full patches applied. The initial inspection used CJS resolution
+for an ESM-only adapter and failed; that probe was corrected without
+reinstalling or modifying the staged package. The final ESM-aware inspection
+confirms Discord's actual `discord.js` resolves the patched top-level
+`@discordjs/ws/dist/index.js`, not a nested unpatched copy. npm pack dry-run
+lists all seven bundled package manifests among 21,852 files. Entry-point
+hashes and paths are recorded in
+`chat-package-stage-inspect-root01-0909.log`; the installation/patch log is
+`chat-package-stage-root01-0909.log`.
+
+This qualifies the dependency-bundling path at that frozen patch snapshot,
+not a full built-server clean installation or the in-progress newer Slack and
+Telegram patches. Live node_modules, server 76, the guarded runner and
+CI-owned lockfile were not changed. Full clean-install/lockfile reconciliation
+remains a release prerequisite.
