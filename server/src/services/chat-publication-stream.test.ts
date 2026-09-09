@@ -37,10 +37,41 @@ describe("safe chat publication streaming", () => {
     expect(wait).toHaveBeenNthCalledWith(1, 25);
   });
 
+  it("hands over ready text in bounded batches without simulating model generation", async () => {
+    const text = "😀a".repeat(2_501);
+    const wait = vi.fn(async () => undefined);
+    const chunks: string[] = [];
+    for await (const chunk of streamSafePublicationText(text, { wait })) {
+      chunks.push(chunk);
+    }
+    expect(chunks).toHaveLength(3);
+    expect(chunks.map((chunk) => Array.from(chunk).length)).toEqual([
+      2_000, 2_000, 1_002,
+    ]);
+    expect(chunks.join("")).toBe(text);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
   it("streams only responses large enough to benefit", () => {
     expect(shouldStreamSafePublicationText("short")).toBe(false);
     expect(shouldStreamSafePublicationText("x".repeat(281))).toBe(true);
   });
+
+  it.each(["@x", "&#64;x", "&commat;x"])(
+    "preserves conservative batching for mention-bearing text %s",
+    async (mention) => {
+      const text = `${mention}\n\n`.repeat(499);
+      const chunks: string[] = [];
+      const wait = vi.fn(async () => undefined);
+      for await (const chunk of streamSafePublicationText(text, { wait }))
+        chunks.push(chunk);
+      expect(chunks.every((chunk) => Array.from(chunk).length <= 280)).toBe(
+        true,
+      );
+      expect(chunks.join("")).toBe(text);
+      expect(wait).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     {

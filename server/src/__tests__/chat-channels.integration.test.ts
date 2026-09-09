@@ -26122,7 +26122,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    const publicParagraph = "External-safe result. ".repeat(45).trim();
+    const publicParagraph = "External-safe result. ".repeat(220).trim();
     const comment = await issueService(db).addComment(
       conversation.issueId,
       `${publicParagraph}\n\n<analysis>private chain of thought must never stream</analysis>`,
@@ -26143,7 +26143,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const streamed = providerRuntime?.posts.at(-1);
     expect(streamed?.chunks?.length).toBeGreaterThan(1);
     expect(
-      streamed?.chunks?.every((chunk) => Array.from(chunk).length <= 280),
+      streamed?.chunks?.every((chunk) => Array.from(chunk).length <= 2_000),
     ).toBe(true);
     expect(streamed?.chunks?.join("")).toBe(publication.payload.text);
     expect(streamed?.text).toBe(publicParagraph);

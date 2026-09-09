@@ -5,8 +5,8 @@ import {
   parseMarkdown,
 } from "chat";
 
-const DEFAULT_CHUNK_CODE_POINTS = 280;
-const DEFAULT_CHUNK_DELAY_MS = 75;
+const STREAM_THRESHOLD_CODE_POINTS = 280;
+const DEFAULT_CHUNK_CODE_POINTS = 2_000;
 export const TELEGRAM_DURABLE_PART_CODE_POINTS = 1_600;
 const TELEGRAM_MESSAGE_UTF16_LIMIT = 4_096;
 const TELEGRAM_RICH_MESSAGE_CODE_POINT_LIMIT = 32_768;
@@ -91,6 +91,9 @@ function escapeSafeTelegramBoundary(
  * Streams only an already-projected, externally publishable payload. Paperclip
  * never passes run logs, tool events, or model reasoning through this helper.
  * Adapters may use a native stream or their own bounded post/edit fallback.
+ * The complete approved answer is already available: do not simulate model
+ * generation with producer sleeps. Larger bounded batches reduce API calls;
+ * the adapter still owns provider pacing, backpressure, and final receipts.
  */
 export async function* streamSafePublicationText(
   text: string,
@@ -100,14 +103,17 @@ export async function* streamSafePublicationText(
     wait?: (delayMs: number) => Promise<void>;
   } = {},
 ): AsyncIterable<string> {
+  // Slack resolves cached @names after Markdown rendering. Retain the prior
+  // small batch for literal mentions and entities that may render as mentions;
+  // source size alone cannot bound those provider-side ID expansions.
+  const defaultChunkCodePoints = /[@&]/.test(text)
+    ? STREAM_THRESHOLD_CODE_POINTS
+    : DEFAULT_CHUNK_CODE_POINTS;
   const chunkCodePoints = Math.max(
     1,
-    Math.min(options.chunkCodePoints ?? DEFAULT_CHUNK_CODE_POINTS, 2_000),
+    Math.min(options.chunkCodePoints ?? defaultChunkCodePoints, 2_000),
   );
-  const delayMs = Math.max(
-    0,
-    Math.min(options.delayMs ?? DEFAULT_CHUNK_DELAY_MS, 1_000),
-  );
+  const delayMs = Math.max(0, Math.min(options.delayMs ?? 0, 1_000));
   const wait =
     options.wait ??
     (async (duration: number) => {
@@ -121,7 +127,7 @@ export async function* streamSafePublicationText(
 }
 
 export function shouldStreamSafePublicationText(text: string): boolean {
-  return Array.from(text).length > DEFAULT_CHUNK_CODE_POINTS;
+  return Array.from(text).length > STREAM_THRESHOLD_CODE_POINTS;
 }
 
 /**
