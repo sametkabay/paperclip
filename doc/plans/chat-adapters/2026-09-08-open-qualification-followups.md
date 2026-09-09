@@ -39,30 +39,20 @@ permissions and audit. Do not narrow completion to whichever tests pass.
 
 ## Current deployment
 
-**Cutover in progress:** server 76 was gracefully stopped at `08:46:53 UTC`
-after a fresh zero-active-run check (290 terminal); zero runs were interrupted.
-Private backup `pre-77-backup.RfChxI/pre-server-77-20260909-034715.sql.gz`
-is 8,720,075 bytes, 0600, gzip-verified, restore untested, zero pruned. Migration
-0259 applied successfully; live journal count is 258/up to date. Server 77 has
-not started: root caught that existing Telegram webhook subscriptions would
-not receive Stop until reconnect. The safe ordinary-output gate is now frozen,
-with seven genuine RED cases, 20/20 focused GREEN and plain types passing.
-Automatic subscription reconciliation remains the next slice. Do not deploy a
-visible Stop control without verified ingress.
-The table below is the last running server, not a claim it is currently online.
-
-Implementation `52a46cbf6` is pushed and deployed, adding Telegram retained-zero
-recovery fencing, bounded rich input and private callback notices, and removing
-artificial completed-response pacing. It includes the earlier Slack receipt,
-source-bound media, Teams-picture, Discord-command and native recovery repairs.
-Server **76** is running:
+Implementation `9cf0a05eb` is pushed and deployed, including Slack rendered
+stream bounds/partial-delivery safety (`977d9923f`), durable Telegram private
+draft Stop (`8de18acf6`) and its confirmed-subscription gate. It retains earlier
+rich input, private callbacks, source-bound media and native recovery repairs.
+Server **77** is running. The existing Telegram endpoint has no subscription
+receipt yet, so it safely sends ordinary complete replies without advertising
+Stop; automatic subscription reconciliation is the next implementation slice.
 
 | Field                    | Verified value                                                          |
 | ------------------------ | ----------------------------------------------------------------------- |
-| PID / tool handle        | `45500` / `38031`                                                       |
+| PID / tool handle        | `79184` / `31617`                                                       |
 | Listener                 | `127.0.0.1:3137`                                                        |
-| Loaded server version    | `2026.831.0+616.git.52a46cbf6.dirty`                                    |
-| Started / recovery ready | `08:15:25.777` / `08:15:29.173 UTC`, September 9                        |
+| Loaded server version    | `2026.831.0+621.git.9cf0a05eb`                                          |
+| Started / recovery ready | `08:55:49.350` / `08:55:52.590 UTC`, September 9                        |
 | Native runner SHA256     | `6279d39ac731e4565a638b64c93673b8ca23e6dfbc0870e24d48422497f1826d`      |
 | Live DB                  | `chat_adapters_live_3103` on local PostgreSQL `55439`, role `paperclip` |
 | Last checked runs        | 290 terminal: 262 succeeded, 26 failed, 2 cancelled; zero active        |
@@ -75,18 +65,18 @@ receipt for command `1547131713472430131` at `06:29:05.036 UTC`; the active
 endpoint now has both slash-command and ephemeral-message capability. This
 proves live provider registration, not invocation or private-response UX.
 The health response's Git commit is dynamic; use loaded version and process
-start to identify deployed code. The loaded `.dirty` suffix reflects only
-three documentation files being updated during startup; runtime source was
-committed and its reviewed hashes matched.
+start to identify deployed code. Server 77 loaded a clean committed checkout.
 
-Server 75 exited cleanly after a fresh zero-active-run check at
-`08:14:57.129 UTC`; the graceful drain interrupted zero runs. Its stopped
-database was backed up to private
-`pre-76-backup.gKWl0c/pre-server-76-20260909-031506.sql.gz`
-(8,498,228 bytes; directory 0700/file 0600; gzip integrity passed; restore not
-tested; no backup pruned). No migration was needed: journal count 257, up to
-date. No credentials or historical recovery records were rewritten.
-At `08:15:48.704 UTC`, the run inventory remained 290 terminal, zero active,
+Server 76 exited cleanly after a fresh zero-active-run check at
+`08:46:53.650 UTC`; graceful drain interrupted zero runs. Its stopped database
+was backed up to private
+`pre-77-backup.RfChxI/pre-server-77-20260909-034715.sql.gz`
+(8,720,075 bytes; directory 0700/file 0600; gzip integrity passed; restore not
+tested; no backup pruned). Migration 0259 applied successfully; journal count
+258, up to date. Cutover was held while root's late-found Telegram subscription
+gap received seven genuine RED/20 focused GREEN checks and independent review.
+No credentials or historical recovery records were rewritten.
+At `08:56:34.067 UTC`, the run inventory remained 290 terminal, zero active,
 and the original Discord/GitHub/Slack/Telegram endpoints remained active.
 The qualified runner and lockfile SHA256 values are unchanged.
 
@@ -107,8 +97,8 @@ All local runtime material is under ignored
 `.paperclip-runtime/chat-adapters-live/`, including:
 
 - `start-server.sh`: configured isolated startup, no embedded credentials.
-- `server-experimental-landing-76.log`: current server log.
-- `pre-server-76-backup-0909.log`: private backup/schema metadata.
+- `server-experimental-landing-77.log`: current server log.
+- `pre-server-77-backup-migration-0909.log`: private backup/schema metadata.
 - `qualified-runnerd-2400740c`: preserved old qualified runner backup.
 - `home/instances/chat-adapters-live/runtime/paperclip-runner/durable-sessions`:
   live native roots; do not manipulate historical evidence.
@@ -122,7 +112,7 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 ## Immediate next actions
 
-1. **Resume real browser qualification on server 76.** Latest actual browser
+1. **Resume real browser qualification on server 77.** Latest actual browser
    inventory reports **Mac locked**; the user has been asked to unlock it.
    Discord login was restored before the lock. Do not request Discord login
    again unless the actual provider page requires it.
@@ -151,8 +141,8 @@ describe the normal binary as continuously unchanged across that earlier check.
 
 **Current additional work:** James's Slack rendered-paragraph repair is frozen
 and independently reviewed. Root staged the exact candidate in this checkout's
-installed adapter; default-import regression passes 192/192. Server 76 has not
-been restarted, so this is not deployed or live-provider proof. The repair
+installed adapter; default-import regression passes 192/192. It is deployed on
+server 77 but still lacks the new live-provider UI walkthrough. The repair
 bounds post-mention-resolution payloads including the SDK's pending buffer,
 validates coherent native receipts and prevents fallback after ambiguous or
 partial delivery. Boole's Telegram Stop implementation is also frozen and
@@ -161,8 +151,9 @@ the current task/run. Durable ownership, final-send arbitration and a
 non-reusing instance sequence are covered by the new tests. Root's fresh
 combined repeat passes **825/825** integration, **31/31** deterministic browser
 and **348/348** helper/runtime tests. DB/shared/server/UI plain types pass.
-Migration 0259 is generated and verified but not live yet; neither fix is
-deployed at this checkpoint. Root repaired the server's release bundle
+Migration 0259 and both fixes are deployed on server 77. The follow-up
+subscription gate passes 20/20 and keeps old Telegram endpoints on ordinary
+replies until automatic upgrade is implemented and qualified. Root repaired the server's release bundle
 manifest so all five adapter patches and the Discord transport patch ship to
 npm consumers. Packaging contracts pass 22/22; an isolated production-helper
 stage at patch snapshot `1a0a77025` applied every patch and confirmed Discord
@@ -233,7 +224,7 @@ browser checks pass **31/31** on separate fresh
 `chat_private_rich_browser_20260909_root01` in 2.8 minutes. Shared/server/UI
 plain types pass. Recovery fencing is committed/pushed as `52a46cbf6` and
 deployed on server 76. These are not new live-provider conversations.
-Native generation-stop remains undeployed at this checkpoint. Preserve recipient/source
+Native generation-stop is deployed behind the confirmed-subscription gate. Preserve recipient/source
 authority and never expose raw model thinking merely because a provider
 offers a thinking block.
 

@@ -4647,3 +4647,27 @@ The live sequence is positive 31-bit/noncycling and still unallocated. The
 original four endpoints remain active; no credentials or historical run state
 were changed. Server 77 startup is the next action, with automatic subscription
 maintenance and actual provider UI qualification still open.
+
+### September 9: server 77 clean deployment checkpoint
+
+Root committed/pushed the safe gate as `9cf0a05eb`, following Slack `977d9923f`
+and Telegram `8de18acf6`. Independent frozen-source gate review is clear.
+Server **77** is PID **79184**, handle **31617**, loaded clean version
+**`2026.831.0+621.git.9cf0a05eb`**, started `08:55:49.350 UTC`, startup recovery
+ready `08:55:52.590`. Loopback and private Tailscale Board health returned
+200/ready; public webhook-only Funnel Board health remains 404. Discord Gateway
+connected the original bot `1546330979860221952`.
+
+At `08:56:34.067 UTC`, the live run inventory remained 290 terminal (262
+succeeded, 26 failed, 2 cancelled), zero active, latest start `02:15:47.812`.
+The original Discord/GitHub/Slack/Telegram endpoints remain active. The existing
+Telegram endpoint has zero subscription receipts, so its normal complete
+replies remain available and Stop is not advertised. The automatic upgrade
+worker is still in progress, not silently assumed to have run. Guarded runner
+and lockfile SHA256 values remain unchanged; proxy 27961 and the other checkout
+on 3103 were untouched.
+
+Root retried actual browser inventory after restart; the controller again
+reported the Mac locked. Discord Gateway connectivity and ready API responses
+do not prove the live UI journey. No new provider conversation, successful
+historical recovery or production-readiness completion is claimed.
