@@ -125,6 +125,11 @@ vi.mock("@chat-adapter/telegram", () => ({
     captures.telegramConfigs.push(config);
     return {
       name: "telegram",
+      processUpdate: () => undefined,
+      parseTelegramMessage:
+        config.botToken === "missing-telegram-rich-parser"
+          ? undefined
+          : () => ({}),
       extractAttachments:
         config.botToken === "missing-telegram-parser" ? undefined : () => [],
       createAttachment:
@@ -537,7 +542,11 @@ describe("Chat SDK endpoint runtime", () => {
     ).toThrow(DiscordAdapterCompatibilityError);
   });
 
-  it.each(["missing-telegram-parser", "missing-telegram-factory"])(
+  it.each([
+    "missing-telegram-parser",
+    "missing-telegram-factory",
+    "missing-telegram-rich-parser",
+  ])(
     "fails closed when the pinned Telegram attachment contract is unavailable (%s)",
     (botToken) => {
       expect(() =>

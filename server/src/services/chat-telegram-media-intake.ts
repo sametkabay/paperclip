@@ -7,7 +7,9 @@ type MediaKind =
   | "video"
   | "animation"
   | "live_photo_video"
-  | "live_photo_image";
+  | "live_photo_image"
+  | "rich_document"
+  | "rich_photo";
 export interface TelegramMediaScope {
   companyId: string;
   endpointId: string;
@@ -24,6 +26,7 @@ export interface TelegramMediaLocator extends TelegramMediaScope {
   fileUniqueId: string;
   metadataSha256: string;
   sourceSha256: string;
+  richPath?: string;
 }
 type Origin = Pick<
   TelegramMediaLocator,
@@ -34,6 +37,7 @@ type Origin = Pick<
   | "messageId"
   | "principalExternalId"
   | "metadataSha256"
+  | "richPath"
 >;
 const origins = new WeakMap<Attachment, Origin>();
 const KINDS = new Set<MediaKind>([
@@ -43,6 +47,8 @@ const KINDS = new Set<MediaKind>([
   "animation",
   "live_photo_video",
   "live_photo_image",
+  "rich_document",
+  "rich_photo",
 ]);
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -53,6 +59,24 @@ const id = (value: unknown): value is string =>
   !/[\s\u0000-\u001f\u007f]/u.test(value);
 const integer = (value: unknown, min = 0): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= min;
+function validRichPath(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 1024) return false;
+  try {
+    const path: unknown = JSON.parse(value);
+    return (
+      Array.isArray(path) &&
+      path.length >= 2 &&
+      path.length <= 64 &&
+      path.length % 2 === 0 &&
+      path[0] === "blocks" &&
+      path.every((part, index) =>
+        index % 2 === 0 ? part === "blocks" || part === "items" : integer(part),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
 function metadataHash(attachment: Attachment): string {
   return createHash("sha256")
     .update(
@@ -82,6 +106,7 @@ function sourceHash(value: Origin & TelegramMediaScope): string {
         value.threadId,
         value.messageId,
         value.principalExternalId,
+        ...(value.richPath === undefined ? [] : [value.richPath]),
       ]),
     )
     .digest("hex");
@@ -90,6 +115,129 @@ function sourceHash(value: Origin & TelegramMediaScope): string {
 /** Runtime-owned provenance, never inferred from arbitrary attachment metadata. */
 export function hasTelegramMediaProvenance(attachment: Attachment): boolean {
   return origins.has(attachment);
+}
+
+export function telegramMediaNeedsIdentification(
+  attachment: Attachment,
+): boolean {
+  const media = origins.get(attachment)?.media;
+  return Boolean(
+    media &&
+    !["rich_document", "rich_photo", "live_photo_image"].includes(media),
+  );
+}
+
+/** Bind a parsed rich file to its exact original provider block, not a copied subtype hint. */
+export function bindTelegramRichAttachment(
+  attachment: Attachment,
+  raw: unknown,
+  path: readonly (string | number)[],
+): boolean {
+  if (
+    !record(raw) ||
+    !record(raw.chat) ||
+    !record(raw.from) ||
+    !integer(raw.chat.id, Number.MIN_SAFE_INTEGER) ||
+    !raw.chat.id ||
+    !integer(raw.from.id, 1) ||
+    !integer(raw.message_id, 1) ||
+    !integer(raw.date) ||
+    raw.receiver_user !== undefined ||
+    raw.ephemeral_message_id !== undefined ||
+    (raw.message_thread_id !== undefined &&
+      !integer(raw.message_thread_id, 1)) ||
+    !path.length ||
+    path.length > 64 ||
+    path.some((part) =>
+      typeof part === "number"
+        ? !integer(part)
+        : !["blocks", "items"].includes(part),
+    )
+  )
+    return false;
+  let block: unknown = raw.rich_message;
+  for (const part of path) {
+    if (typeof part === "number") {
+      if (!Array.isArray(block)) return false;
+      block = block[part];
+    } else {
+      if (!record(block)) return false;
+      block = block[part];
+    }
+  }
+  if (
+    !record(block) ||
+    ![
+      "document",
+      "photo",
+      "video",
+      "animation",
+      "voice_note",
+      "audio",
+    ].includes(String(block.type))
+  )
+    return false;
+  const kind = String(block.type);
+  const file =
+    kind === "photo" && Array.isArray(block.photo)
+      ? block.photo.at(-1)
+      : block[kind];
+  if (
+    !record(file) ||
+    !id(file.file_id) ||
+    !id(file.file_unique_id) ||
+    (file.file_size !== undefined && !integer(file.file_size)) ||
+    (file.file_name !== undefined &&
+      (typeof file.file_name !== "string" || file.file_name.length > 255)) ||
+    (file.mime_type !== undefined &&
+      (typeof file.mime_type !== "string" || file.mime_type.length > 255)) ||
+    (!["document", "photo"].includes(kind) && !integer(file.duration)) ||
+    (["photo", "video", "animation"].includes(kind) &&
+      (!integer(file.width, 1) || !integer(file.height, 1)))
+  )
+    return false;
+  const type =
+    kind === "photo"
+      ? "image"
+      : kind === "document"
+        ? "file"
+        : ["audio", "voice_note"].includes(kind)
+          ? "audio"
+          : "video";
+  const expected: Attachment = {
+    type,
+    size: file.file_size as number | undefined,
+    name: file.file_name as string | undefined,
+    mimeType:
+      kind === "photo" ? "image/jpeg" : (file.mime_type as string | undefined),
+    ...(["image", "video"].includes(type)
+      ? { width: file.width as number, height: file.height as number }
+      : {}),
+  };
+  if (
+    metadataHash(attachment) !== metadataHash(expected) ||
+    attachment.fetchMetadata?.fileId !== file.file_id ||
+    attachment.fetchMetadata?.fileUniqueId !== file.file_unique_id
+  )
+    return false;
+  origins.set(attachment, {
+    media:
+      kind === "document"
+        ? "rich_document"
+        : kind === "photo"
+          ? "rich_photo"
+          : kind === "voice_note"
+            ? "voice"
+            : (kind as MediaKind),
+    fileId: file.file_id,
+    fileUniqueId: file.file_unique_id,
+    richPath: JSON.stringify(path),
+    threadId: `telegram:${raw.chat.id}${raw.message_thread_id === undefined ? "" : `:${raw.message_thread_id}`}`,
+    messageId: `${raw.chat.id}:${raw.message_id}`,
+    principalExternalId: String(raw.from.id),
+    metadataSha256: metadataHash(attachment),
+  });
+  return true;
 }
 
 export function normalizeTelegramMediaAttachments(
@@ -264,6 +412,9 @@ export function validateTelegramMediaLocator(
     value.metadataSha256 !== metadataHash(attachment) ||
     !integer(value.runtimeGeneration, 1) ||
     !id(value.credentialFingerprint) ||
+    (value.richPath !== undefined && !validRichPath(value.richPath)) ||
+    (["rich_document", "rich_photo"].includes(String(value.media)) &&
+      value.richPath === undefined) ||
     (Object.keys(scope) as (keyof TelegramMediaScope)[]).some(
       (key) => value[key] !== scope[key],
     )
@@ -275,6 +426,7 @@ export function validateTelegramMediaLocator(
     fileId: value.fileId,
     fileUniqueId: value.fileUniqueId,
     metadataSha256: value.metadataSha256 as string,
+    ...(typeof value.richPath === "string" ? { richPath: value.richPath } : {}),
     ...scope,
   };
   const sourceSha256 = sourceHash(locator);

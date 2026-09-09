@@ -67,10 +67,18 @@ import {
   type TelegramMediaLocator,
   type TelegramMediaScope,
 } from "./chat-telegram-media-intake.js";
+import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   applySlackReceiptReaction,
   type SlackReceiptMutation,
 } from "./chat-slack-receipts.js";
+import {
+  captureTelegramCallbackProvenance,
+  hasTelegramEphemeralInput,
+  sendTelegramCallbackNotice,
+  type TelegramCallbackProvenance,
+  type TelegramCallbackReceipt,
+} from "./chat-telegram-ephemeral.js";
 import {
   installTeamsFileConsentHook,
   parseTeamsFileConsentCard,
@@ -380,6 +388,8 @@ export interface ChatSdkCallbackEvent<T> {
   provider: ChatSdkProvider;
   /** Runtime-assigned ingress context; never read from provider payloads. */
   transport?: "discord_gateway";
+  /** Opaque runtime-owned proof from the authenticated Telegram callback. */
+  telegramCallback?: TelegramCallbackProvenance;
 }
 
 /** Private command completion only; task publications use the ordinary FIFO. */
@@ -1451,6 +1461,11 @@ function createProviderAdapter(
       const adapter = createTelegramAdapter(adapterConfig);
       const parser = adapter as unknown as {
         extractAttachments(raw: TelegramRawMessage): Attachment[];
+        parseTelegramMessage(
+          raw: TelegramRawMessage,
+          threadId: string,
+          content?: { text: string; formatted: Message["formatted"] },
+        ): Message;
         createAttachment(
           type: Attachment["type"],
           fileId: string,
@@ -1459,18 +1474,56 @@ function createProviderAdapter(
       };
       if (
         typeof parser.extractAttachments !== "function" ||
-        typeof parser.createAttachment !== "function"
+        typeof parser.createAttachment !== "function" ||
+        typeof parser.parseTelegramMessage !== "function"
       ) {
         throw new Error("Telegram attachment parser contract is unavailable");
       }
       const extractAttachments = parser.extractAttachments.bind(adapter);
+      const create = (
+        type: Attachment["type"],
+        fileId: string,
+        metadata: Record<string, unknown>,
+      ) => parser.createAttachment(type, fileId, metadata);
       parser.extractAttachments = (raw) =>
+        normalizeTelegramRichMessage(raw, create)?.attachments ??
         normalizeTelegramMediaAttachments(
           raw,
           normalizeTelegramVideoNoteAttachments(raw, extractAttachments(raw)),
-          (type, fileId, metadata) =>
-            parser.createAttachment(type, fileId, metadata),
+          create,
         );
+      const parseTelegramMessage = parser.parseTelegramMessage.bind(adapter);
+      parser.parseTelegramMessage = (raw, threadId, content) => {
+        const rich = normalizeTelegramRichMessage(raw, create);
+        if (!rich) return parseTelegramMessage(raw, threadId, content);
+        // Remove the rich tree before the legacy converter can recursively
+        // traverse it. Keep provider identity/raw only for verified source
+        // binding; exported text/AST contains the bounded readable projection.
+        const safeRaw = {
+          ...raw,
+          rich_message: undefined,
+          text: rich.text,
+          caption: undefined,
+          entities: [],
+          caption_entities: [],
+          reply_to_message: undefined,
+        } as TelegramRawMessage;
+        const message = parseTelegramMessage(safeRaw, threadId, {
+          text: rich.text,
+          formatted: {
+            type: "root",
+            children: [
+              {
+                type: "paragraph",
+                children: [{ type: "text", value: rich.text }],
+              },
+            ],
+          },
+        });
+        message.raw = raw;
+        message.attachments = rich.attachments;
+        return message;
+      };
       return adapter;
     }
   }
@@ -1654,6 +1707,7 @@ function validatedAttachmentRecoveryDescriptor(
 }
 
 interface WebhookIngressAttempt {
+  receivedAtMs: number;
   callbackError: unknown;
   callbackPromises: Set<Promise<unknown>>;
   providerUpdateId?: number;
@@ -1761,6 +1815,7 @@ function registerCallbacks(
   providerUpdateId: () => number | undefined,
   actionTransport: () => ChatSdkCallbackEvent<ActionEvent>["transport"],
   discordCommandDispatch: () => DiscordCommandDispatch | undefined,
+  telegramCallback: (raw: unknown) => TelegramCallbackProvenance | undefined,
 ): void {
   const messageCallback =
     (trigger: ChatSdkMessageTrigger) =>
@@ -1852,6 +1907,9 @@ function registerCallbacks(
             provider,
             event,
             ...(transport ? { transport } : {}),
+            ...(telegramCallback(event.raw)
+              ? { telegramCallback: telegramCallback(event.raw) }
+              : {}),
           }),
       );
     });
@@ -1923,6 +1981,11 @@ export class ChatSdkEndpointRuntime {
     new AsyncLocalStorage<DiscordCommandDispatch>();
   private readonly webhookIngressTimeoutMs: number;
   private readonly slackReceiptBotToken: string | null;
+  private readonly telegramEphemeralBotToken: string | null;
+  private readonly telegramCallbackProofs = new WeakMap<
+    object,
+    TelegramCallbackProvenance
+  >();
   private readonly microsoftTeamsTenantId: string | null;
   private readonly microsoftTeamsAppId: string | null;
   private readonly teamsInlineImageDescriptors = new WeakMap<
@@ -1949,6 +2012,8 @@ export class ChatSdkEndpointRuntime {
       options.providerConfig.provider === "slack"
         ? options.providerConfig.credentials.botToken
         : null;
+    this.telegramEphemeralBotToken = options.providerConfig.provider === "telegram"
+      ? options.providerConfig.credentials.botToken : null;
     this.sdkAdapterKey = adapterKey(this.provider);
     this.teamsFileConsentEnabled =
       this.provider === "microsoft-teams" &&
@@ -1987,6 +2052,38 @@ export class ChatSdkEndpointRuntime {
         this.discordGatewayFatal = fatal;
       },
     );
+    if (this.provider === "telegram") {
+      const adapter = this.adapter as unknown as {
+        botUserId?: string;
+        processUpdate(update: unknown, options?: WebhookOptions): void;
+      };
+      if (typeof adapter.processUpdate !== "function") {
+        throw new Error(
+          "Telegram authenticated dispatch contract is unavailable",
+        );
+      }
+      const processUpdate = adapter.processUpdate.bind(this.adapter);
+      adapter.processUpdate = (update, webhookOptions) => {
+        // The pinned webhook verifier calls processUpdate only after checking
+        // the secret. No parser-normalized chat:0 input may enter ordinary work.
+        if (hasTelegramEphemeralInput(update)) return;
+        const attempt = this.webhookIngress.getStore();
+        if (attempt && adapter.botUserId) {
+          const captured = captureTelegramCallbackProvenance(
+            {
+              companyId: this.companyId,
+              endpointId: this.endpointId,
+              botUserId: adapter.botUserId,
+            },
+            update,
+            attempt.receivedAtMs,
+          );
+          if (captured)
+            this.telegramCallbackProofs.set(captured.raw, captured.proof);
+        }
+        processUpdate(update, webhookOptions);
+      };
+    }
     const durableState = createPaperclipChatSdkState({
       companyId: options.companyId,
       endpointId: options.endpointId,
@@ -2040,6 +2137,7 @@ export class ChatSdkEndpointRuntime {
           ? "discord_gateway"
           : undefined,
       () => this.discordCommandDispatch.getStore(),
+      (raw) => isRecord(raw) ? this.telegramCallbackProofs.get(raw) : undefined,
     );
     if (
       options.providerConfig.provider === "discord" &&
@@ -2163,7 +2261,17 @@ export class ChatSdkEndpointRuntime {
     request: Request,
     options?: WebhookOptions,
     responseDeadlineAt?: number,
+    serviceReceivedAtMs?: number,
   ): Promise<Response> {
+    // A body read, identity initialization or durable queue wait cannot mint
+    // a fresh provider response window for an already received callback.
+    const runtimeReceivedAtMs = Date.now();
+    const receivedAtMs =
+      typeof serviceReceivedAtMs === "number" &&
+      Number.isSafeInteger(serviceReceivedAtMs) &&
+      serviceReceivedAtMs > 0
+        ? Math.min(serviceReceivedAtMs, runtimeReceivedAtMs)
+        : runtimeReceivedAtMs;
     const handler = this.chat.webhooks[this.sdkAdapterKey];
     if (!handler) {
       throw new Error(
@@ -2175,6 +2283,7 @@ export class ChatSdkEndpointRuntime {
         ? await telegramWebhookUpdateId(request)
         : undefined;
     const attempt: WebhookIngressAttempt = {
+      receivedAtMs,
       callbackError: undefined,
       callbackPromises: new Set(),
       ...(providerUpdateId !== undefined ? { providerUpdateId } : {}),
@@ -2557,6 +2666,28 @@ export class ChatSdkEndpointRuntime {
       throw new Error("Slack receipt runtime unavailable");
     await applySlackReceiptReaction(
       { ...input, botToken: this.slackReceiptBotToken },
+      fetchImpl,
+    );
+  }
+
+  async sendTelegramCallbackNotice(
+    receipt: TelegramCallbackReceipt,
+    text: string,
+    fetchImpl?: typeof globalThis.fetch,
+  ): Promise<{ id: string; threadId: string }> {
+    if (
+      this.provider !== "telegram" ||
+      !this.telegramEphemeralBotToken ||
+      receipt.companyId !== this.companyId ||
+      receipt.endpointId !== this.endpointId
+    ) {
+      throw Object.assign(
+        new Error("Telegram private response runtime unavailable"),
+        { code: "CHAT_PROVIDER_PRETRANSPORT_REJECTED" },
+      );
+    }
+    return sendTelegramCallbackNotice(
+      { receipt, text, botToken: this.telegramEphemeralBotToken },
       fetchImpl,
     );
   }

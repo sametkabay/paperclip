@@ -125,9 +125,18 @@ import {
 
 import { telegramAttachmentForUpload } from "./chat-telegram-photo.js";
 import {
+  parseTelegramCallbackReceipt,
+  readTelegramCallbackProvenance,
+  telegramCallbackThreadId,
+  TELEGRAM_PRIVATE_ACTION_UNAVAILABLE,
+  type TelegramCallbackReceipt,
+} from "./chat-telegram-ephemeral.js";
+import {
   hasTelegramMediaProvenance,
   identifyTelegramMedia,
+  telegramMediaNeedsIdentification,
 } from "./chat-telegram-media-intake.js";
+import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   nativeFailedRunRetryStateIsSafe,
   nativePreProviderRetryAfterCleanupStateIsSafe,
@@ -973,7 +982,9 @@ type ProviderEffectTarget = {
 };
 type ProviderEffectPayload = {
   version: 1;
-  effect: "thread_message" | "ephemeral_message";
+  effect: "thread_message" | "ephemeral_message" | "telegram_callback_notice";
+  telegramCallback?: TelegramCallbackReceipt;
+  telegramAuthorizationSha256?: string;
   authorizationMode?: "principal" | "safe_notice";
   threadId: string;
   userId?: string;
@@ -1218,7 +1229,8 @@ function providerEffectPayload(
   if (
     payload.version !== 1 ||
     (payload.effect !== "thread_message" &&
-      payload.effect !== "ephemeral_message") ||
+      payload.effect !== "ephemeral_message" &&
+      payload.effect !== "telegram_callback_notice") ||
     typeof payload.threadId !== "string" ||
     !payload.threadId ||
     typeof payload.text !== "string" ||
@@ -1255,6 +1267,26 @@ function providerEffectPayload(
   ) {
     return null;
   }
+  if (payload.effect === "telegram_callback_notice") {
+    const receipt = parseTelegramCallbackReceipt(payload.telegramCallback);
+    if (
+      !receipt ||
+      payload.authorizationMode !== "safe_notice" ||
+      payload.text !== TELEGRAM_PRIVATE_ACTION_UNAVAILABLE ||
+      payload.threadId !== telegramCallbackThreadId(receipt) ||
+      payload.userId !== receipt.receiverUserId ||
+      payload.settleDelivery !== false ||
+      payload.fallbackText !== undefined ||
+      payload.completeConversationId !== undefined ||
+      typeof payload.telegramAuthorizationSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(payload.telegramAuthorizationSha256)
+    )
+      return null;
+  } else if (
+    payload.telegramCallback !== undefined ||
+    payload.telegramAuthorizationSha256 !== undefined
+  )
+    return null;
   return payload as ProviderEffectPayload;
 }
 
@@ -2175,6 +2207,7 @@ function telegramLifecycleEventFromPayload(
     message_thread_id?: unknown;
     sender_chat?: unknown;
     text?: unknown;
+    rich_message?: unknown;
   };
   const chatId = message.chat?.id;
   const messageId = message.message_id;
@@ -2191,12 +2224,14 @@ function telegramLifecycleEventFromPayload(
     return null;
   const topicId = message.message_thread_id;
   if (topicId !== undefined && typeof topicId !== "number") return null;
+  const rich = normalizeTelegramRichMessage(message);
   const body =
-    typeof message.text === "string"
+    rich?.text ??
+    (typeof message.text === "string"
       ? message.text
       : typeof message.caption === "string"
         ? message.caption
-        : "";
+        : "");
   const chat = String(chatId);
   const providerUpdateId =
     typeof update.update_id === "number" &&
@@ -2220,7 +2255,7 @@ function telegramLifecycleEventFromPayload(
     // Bot API timestamps have one-second resolution. The update id is the
     // authoritative identity when present; retaining a content hash keeps the
     // fallback path from collapsing two distinct edits in that same second.
-    revision: `${editDate}:${bodyHash}`,
+    revision: `${editDate}:${bodyHash}${rich ? `:${rich.mediaDigest}` : ""}`,
     text: `An external message was edited:\n\n${body.slice(0, MAX_INBOUND_TEXT)}`,
     threadId:
       topicId === undefined
@@ -4559,12 +4594,146 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return conversationId ? baseTeamsConversationId(conversationId) : null;
   }
 
+  // This is permission to return one fixed, neutral callback denial, not
+  // permission to execute the denied action or publish to the conversation.
+  // Retain the initial identity-policy snapshot so queued notices cannot cross
+  // a subsequent actor/link/reach change. No provider I/O occurs under locks.
+  async function lockTelegramCallbackNoticeAuthority(
+    tx: DbTransaction,
+    endpoint: EndpointRow,
+    receipt: TelegramCallbackReceipt,
+    principalId: string | null,
+  ): Promise<string | null> {
+    if (
+      endpoint.provider !== "telegram" ||
+      endpoint.status !== "active" ||
+      endpoint.companyId !== receipt.companyId ||
+      endpoint.id !== receipt.endpointId ||
+      endpoint.botExternalId !== receipt.botUserId ||
+      !endpoint.providerAccountId ||
+      !principalId ||
+      Date.now() < receipt.receivedAtMs ||
+      Date.now() >= receipt.deadlineAtMs
+    )
+      return null;
+    const resource =
+      receipt.chatType === "private"
+        ? null
+        : await tx
+            .select()
+            .from(chatEndpointResources)
+            .where(
+              and(
+                eq(chatEndpointResources.companyId, endpoint.companyId),
+                eq(chatEndpointResources.endpointId, endpoint.id),
+                eq(chatEndpointResources.providerResourceId, receipt.chatId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+    if (
+      receipt.chatType === "private"
+        ? !endpoint.allowDirectMessages
+        : !resource || !nonDirectDestinationAllowed(endpoint, resource)
+    )
+      return null;
+    const principal = await tx
+      .select()
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, endpoint.companyId),
+          eq(chatExternalPrincipals.provider, endpoint.provider),
+          eq(
+            chatExternalPrincipals.providerAccountId,
+            endpoint.providerAccountId,
+          ),
+          eq(chatExternalPrincipals.id, principalId),
+          eq(chatExternalPrincipals.externalId, receipt.receiverUserId),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!principal || principal.kind !== "user" || principal.isBot) return null;
+    const authorization = await lockCurrentPrincipalAuthorization(
+      tx,
+      endpoint,
+      principal.id,
+    );
+    const link = await tx
+      .select({
+        status: chatIdentityLinks.status,
+        userId: chatIdentityLinks.paperclipUserId,
+      })
+      .from(chatIdentityLinks)
+      .where(
+        and(
+          eq(chatIdentityLinks.companyId, endpoint.companyId),
+          eq(chatIdentityLinks.endpointId, endpoint.id),
+          eq(chatIdentityLinks.principalId, principal.id),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return createHash("sha256")
+      .update(
+        JSON.stringify([
+          endpoint.companyId,
+          endpoint.id,
+          receipt.botUserId,
+          resource?.id ?? null,
+          principal.id,
+          principal.externalId,
+          link,
+          authorization,
+          endpoint.allowUnlinkedPeople,
+          endpoint.sponsorUserId,
+        ]),
+      )
+      .digest("hex");
+  }
+
   async function lockCurrentProviderEffectAuthorization(
     tx: DbTransaction,
     action: typeof chatActions.$inferSelect,
     endpoint: EndpointRow,
     payload: ProviderEffectPayload,
   ): Promise<boolean> {
+    if (payload.effect === "telegram_callback_notice") {
+      const receipt = parseTelegramCallbackReceipt(payload.telegramCallback);
+      if (!receipt || !action.deliveryId) return false;
+      const delivery = await tx
+        .select()
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.id, action.deliveryId),
+            eq(chatDeliveries.companyId, action.companyId),
+            eq(chatDeliveries.endpointId, action.endpointId),
+            eq(chatDeliveries.state, "filtered"),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const retained =
+        delivery &&
+        parseTelegramCallbackReceipt(delivery.normalizedEvent.telegramCallback);
+      if (
+        !delivery ||
+        delivery.principalId !== action.principalId ||
+        retained?.sourceSha256 !== receipt.sourceSha256 ||
+        delivery.normalizedEvent.telegramAuthorizationSha256 !==
+          payload.telegramAuthorizationSha256
+      )
+        return false;
+      return (
+        (await lockTelegramCallbackNoticeAuthority(
+          tx,
+          endpoint,
+          receipt,
+          action.principalId,
+        )) === payload.telegramAuthorizationSha256
+      );
+    }
     const conversation = action.conversationId
       ? await tx
           .select()
@@ -4815,41 +4984,50 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             // authorization linearization point. Its transaction has committed
             // before provider I/O begins. The renewable credential lease keeps
             // runtime identity stable without holding database row locks.
-            const target =
-              liveTarget ??
-              (await runtimeFor(claim.endpoint)).thread(payload.threadId);
             let sent: { id: string; threadId: string } | null = null;
-            if (payload.effect === "ephemeral_message") {
-              if (!target.postEphemeral) {
-                if (!payload.fallbackText) {
-                  throw Object.assign(
-                    new Error("Provider does not support ephemeral messages"),
-                    { code: "CHAT_PROVIDER_PRETRANSPORT_REJECTED" },
-                  );
-                }
-                sent = await target.post(payload.fallbackText);
-              } else {
-                try {
-                  sent = await target.postEphemeral(
-                    payload.userId!,
-                    payload.text,
-                    { fallbackToDM: false },
-                  );
-                } catch (error) {
-                  if (
-                    !payload.fallbackText ||
-                    classifyChatPublicationError(error, attempt).kind !==
-                      "failed"
-                  ) {
-                    throw error;
+            if (payload.effect === "telegram_callback_notice") {
+              sent = await (
+                await runtimeFor(claim.endpoint)
+              ).sendTelegramCallbackNotice(
+                payload.telegramCallback!,
+                payload.text,
+              );
+            } else {
+              const target =
+                liveTarget ??
+                (await runtimeFor(claim.endpoint)).thread(payload.threadId);
+              if (payload.effect === "ephemeral_message") {
+                if (!target.postEphemeral) {
+                  if (!payload.fallbackText) {
+                    throw Object.assign(
+                      new Error("Provider does not support ephemeral messages"),
+                      { code: "CHAT_PROVIDER_PRETRANSPORT_REJECTED" },
+                    );
+                  }
+                  sent = await target.post(payload.fallbackText);
+                } else {
+                  try {
+                    sent = await target.postEphemeral(
+                      payload.userId!,
+                      payload.text,
+                      { fallbackToDM: false },
+                    );
+                  } catch (error) {
+                    if (
+                      !payload.fallbackText ||
+                      classifyChatPublicationError(error, attempt).kind !==
+                        "failed"
+                    ) {
+                      throw error;
+                    }
+                  }
+                  if (!sent && payload.fallbackText) {
+                    sent = await target.post(payload.fallbackText);
                   }
                 }
-                if (!sent && payload.fallbackText) {
-                  sent = await target.post(payload.fallbackText);
-                }
+              } else {
+                sent = await target.post(payload.text);
               }
-            } else {
-              sent = await target.post(payload.text);
             }
             if (!sent) {
               throw Object.assign(
@@ -4868,6 +5046,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     attempts: attempt,
                     providerMessageId: sent.id,
                     threadId: sent.threadId,
+                    ...(payload.effect === "telegram_callback_notice"
+                      ? {
+                          code:
+                            payload.telegramCallback?.chatType === "private"
+                              ? "telegram_private_api_accepted"
+                              : "telegram_ephemeral_api_accepted",
+                        }
+                      : {}),
                   },
                   updatedAt: new Date(),
                 })
@@ -9391,6 +9577,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // must not bypass byte identification for native media without MIME.
         const identifyTelegram =
           telegramMedia &&
+          telegramMediaNeedsIdentification(attachment) &&
           normalizeContentType(
             attachment.mimeType ?? "application/octet-stream",
           ) === "application/octet-stream";
@@ -16504,6 +16691,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return;
     }
     const text = `An external message was edited:\n\n${event.message.text.slice(0, MAX_INBOUND_TEXT)}`;
+    const telegramRich =
+      event.provider === "telegram"
+        ? normalizeTelegramRichMessage(event.message.raw)
+        : null;
     await recordLifecycleDelivery(
       {
         actor: lifecycleActorFromAuthor(
@@ -16525,7 +16716,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             event.message.metadata.editedAt ?? event.message.metadata.dateSent
           )?.toISOString() ?? null,
         raw: event.message.raw,
-        revision: `${event.message.metadata.editedAt?.toISOString() ?? "unknown"}:${createHash("sha256").update(event.message.text).digest("hex")}${event.provider === "slack" ? `:${slackLifecycleFilesDigest(event.message.raw)}` : event.provider === "discord" ? `:${discordLifecycleFilesDigest(event.message.raw)}` : ""}`,
+        revision: `${event.message.metadata.editedAt?.toISOString() ?? "unknown"}:${createHash("sha256").update(event.message.text).digest("hex")}${event.provider === "slack" ? `:${slackLifecycleFilesDigest(event.message.raw)}` : event.provider === "discord" ? `:${discordLifecycleFilesDigest(event.message.raw)}` : telegramRich ? `:${telegramRich.mediaDigest}` : ""}`,
       },
       runtimeContext,
     );
@@ -17038,17 +17229,37 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       principalId?: string | null;
     } = {},
   ): Promise<void> {
+    const telegramCallback =
+      endpoint.provider === "telegram" && endpoint.botExternalId
+        ? readTelegramCallbackProvenance(event.telegramCallback, {
+            companyId: endpoint.companyId,
+            endpointId: endpoint.id,
+            botUserId: endpoint.botExternalId,
+            threadId: event.event.threadId,
+            messageId: event.event.messageId,
+            userId: event.event.user.userId,
+          })
+        : null;
     const fingerprint = createHash("sha256")
       .update(
-        JSON.stringify([
-          endpoint.id,
-          event.provider,
-          event.event.threadId,
-          event.event.messageId,
-          event.event.user.userId,
-          event.event.actionId,
-          event.event.triggerId ?? null,
-        ]),
+        JSON.stringify(
+          telegramCallback
+            ? [
+                endpoint.id,
+                "telegram_callback_denial",
+                telegramCallback.botUserId,
+                telegramCallback.callbackId,
+              ]
+            : [
+                endpoint.id,
+                event.provider,
+                event.event.threadId,
+                event.event.messageId,
+                event.event.user.userId,
+                event.event.actionId,
+                event.event.triggerId ?? null,
+              ],
+        ),
       )
       .digest("hex");
     const providerEventId = `action-denied:${fingerprint}`;
@@ -17068,19 +17279,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             fallbackText: "This Paperclip action is no longer available.",
             settleDelivery: false,
           } as const)
-        : actionThread && endpoint.provider === "telegram"
-          ? ({
-              version: 1,
-              effect: "thread_message",
-              authorizationMode: "safe_notice",
-              threadId: event.event.threadId,
-              text: "This Paperclip action is no longer available.",
-              settleDelivery: false,
-            } as const)
-          : null;
+        : null;
     let effect: typeof chatActions.$inferSelect | null = null;
     try {
       effect = await db.transaction(async (tx) => {
+        const currentEndpoint = telegramCallback
+          ? await runtimeCallbackEndpoint(tx, endpoint.id, runtimeContext, [
+              "active",
+            ])
+          : null;
+        const telegramAuthorizationSha256 =
+          currentEndpoint && telegramCallback
+            ? await lockTelegramCallbackNoticeAuthority(
+                tx,
+                currentEndpoint,
+                telegramCallback,
+                safelyKnown.principalId ?? null,
+              )
+            : null;
         const [inserted] = await tx
           .insert(chatDeliveries)
           .values({
@@ -17095,6 +17311,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               providerEventId,
               kind: "action",
               authorization: { outcome: "denied" },
+              ...(telegramCallback
+                ? { telegramCallback, telegramAuthorizationSha256 }
+                : {}),
             },
             state: "filtered",
             attempts: 1,
@@ -17104,14 +17323,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           })
           .onConflictDoNothing()
           .returning();
-        if (!inserted || !effectPayload) return null;
+        const notice: Omit<
+          ProviderEffectPayload,
+          "runtimeGeneration" | "credentialFingerprint"
+        > | null =
+          telegramCallback && telegramAuthorizationSha256
+            ? {
+                version: 1,
+                effect: "telegram_callback_notice",
+                authorizationMode: "safe_notice",
+                telegramCallback,
+                telegramAuthorizationSha256,
+                threadId: telegramCallbackThreadId(telegramCallback),
+                userId: telegramCallback.receiverUserId,
+                text: TELEGRAM_PRIVATE_ACTION_UNAVAILABLE,
+                settleDelivery: false,
+              }
+            : effectPayload;
+        if (!inserted || !notice) return null;
         return stageProviderEffect(tx, {
           endpoint,
           deliveryId: inserted.id,
           conversationId: safelyKnown.conversationId ?? null,
           principalId: safelyKnown.principalId ?? null,
           providerActionId: `provider_effect:${providerEventId}`,
-          payload: effectPayload,
+          payload: notice,
           runtimeContext,
         });
       });
@@ -24694,6 +24930,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       superseded?: boolean;
     },
   ) {
+    const serviceReceivedAtMs = Date.now();
     const replayingDurableGitHubIngress =
       provider === "github" && Boolean(internalContext?.githubIngressActionId);
     const ignoreSupersededIngress = () => {
@@ -25102,6 +25339,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       request,
       undefined,
       githubResponseDeadlineAt ?? undefined,
+      provider === "telegram" ? serviceReceivedAtMs : undefined,
     );
     let lifecyclePayload: unknown = null;
     if (response.ok) {
@@ -31205,7 +31443,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!normalized) return [];
         const acknowledgement = normalized.acknowledgement as
           Record<string, unknown> | undefined;
-        const message = normalized.message as Record<string, unknown> | undefined;
+        const message = normalized.message as
+          Record<string, unknown> | undefined;
         const conversation = normalized.conversation as
           Record<string, unknown> | undefined;
         const source = receiptReactionPayload({
