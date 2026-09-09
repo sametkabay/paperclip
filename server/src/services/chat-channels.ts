@@ -2288,7 +2288,7 @@ function isTelegramMigrationRaw(raw: unknown): boolean {
 function telegramMessageSequence(raw: unknown): number | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = (raw as { message_id?: unknown }).message_id;
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
 }
@@ -2304,7 +2304,7 @@ function telegramMessageId(raw: unknown): string | null {
   if (
     typeof messageId !== "number" ||
     !Number.isSafeInteger(messageId) ||
-    messageId < 0
+    messageId <= 0
   )
     return null;
   const normalizedChatId =
@@ -2314,6 +2314,40 @@ function telegramMessageId(raw: unknown): string | null {
         ? chatId
         : null;
   return normalizedChatId ? `${normalizedChatId}:${messageId}` : null;
+}
+
+function telegramZeroMessageId(value: unknown): boolean {
+  // The pinned adapter qualifies native message IDs with the numeric chat ID.
+  // Keep legacy synthetic/non-numeric IDs compatible; zero is specifically
+  // the provider's non-ordinary message identity, never an admitted source.
+  return typeof value === "string" && /^(?:-?\d+:)?0$/.test(value);
+}
+
+function telegramDeliveryHasZeroMessageId(
+  delivery: DeliveryRow,
+  provider: ChatProvider,
+): boolean {
+  if (provider !== "telegram") return false;
+  const normalized = delivery.normalizedEvent as {
+    message?: {
+      providerMessageId?: unknown;
+      providerMessageSequence?: unknown;
+    };
+    conversation?: { externalThreadId?: unknown };
+  };
+  if (
+    telegramZeroMessageId(normalized.message?.providerMessageId) ||
+    normalized.message?.providerMessageSequence === 0
+  )
+    return true;
+  const threadId = normalized.conversation?.externalThreadId;
+  // Check the independently retained event key only inside its exact thread
+  // namespace, not arbitrary IDs ending in ':0' from synthetic commands.
+  return (
+    typeof threadId === "string" &&
+    delivery.providerEventId.startsWith(`${threadId}:`) &&
+    telegramZeroMessageId(delivery.providerEventId.slice(threadId.length + 1))
+  );
 }
 
 function telegramMessageSentAt(raw: unknown): Date | null {
@@ -10242,6 +10276,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       !endpoint ||
       endpoint.assignedAgentId !== payload.agentId ||
       !delivery ||
+      telegramDeliveryHasZeroMessageId(delivery, endpoint.provider) ||
       delivery.endpointId !== endpoint.id ||
       delivery.conversationId !== action.conversationId ||
       delivery.principalId !== action.principalId ||
@@ -12989,6 +13024,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     deferDrainUntilFollowup = false,
     suppressSetupDestinationActivation = false,
   ) {
+    if (
+      endpoint.provider === "telegram" &&
+      (telegramZeroMessageId(message.id) ||
+        (message.raw !== null &&
+          typeof message.raw === "object" &&
+          (message.raw as { message_id?: unknown }).message_id === 0))
+    )
+      return;
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
     // verified payload through its supplemental message_updated lifecycle
@@ -15333,6 +15376,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     trigger: ChatSdkMessageCallbackEvent["trigger"];
     providerUrl: string | null;
   } | null {
+    if (telegramDeliveryHasZeroMessageId(delivery, endpointRuntime.provider))
+      return null;
     const normalized = delivery.normalizedEvent as {
       acknowledgement?: { receiptReactionSupported?: unknown };
       kind?: unknown;
@@ -15581,6 +15626,61 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!delivery || !deliveryReady(delivery, new Date())) break;
         if (delivery.state === "processed") {
           if (!(await processInboundWakeup(delivery.id))) break;
+          continue;
+        }
+        if (telegramDeliveryHasZeroMessageId(delivery, endpoint.provider)) {
+          const filtered = await db
+            .transaction(async (tx) => {
+              // Do not round-trip a PostgreSQL microsecond timestamp through
+              // JS Date for a CAS. Lock the exact receipt, then revalidate the
+              // current source and claim before changing it. A competing live
+              // claim is a retry boundary, not permission to settle its work.
+              const [current] = await tx
+                .select()
+                .from(chatDeliveries)
+                .where(
+                  and(
+                    eq(chatDeliveries.id, delivery.id),
+                    eq(chatDeliveries.companyId, endpoint.companyId),
+                    eq(chatDeliveries.endpointId, endpoint.id),
+                  ),
+                )
+                .for("update", { noWait: true });
+              const filteredAt = new Date();
+              if (
+                !current ||
+                current.state !== delivery.state ||
+                current.eventKind !== delivery.eventKind ||
+                !["received", "retry", "processing"].includes(current.state) ||
+                normalizedDeliveryThreadId(current) !== threadId ||
+                !deliveryReady(current, filteredAt) ||
+                !telegramDeliveryHasZeroMessageId(current, endpoint.provider)
+              )
+                return false;
+              const changed = await tx
+                .update(chatDeliveries)
+                .set({
+                  state: "filtered",
+                  nextAttemptAt: null,
+                  processedAt: filteredAt,
+                  updatedAt: filteredAt,
+                  redactedError:
+                    "Telegram message ID zero cannot authorize ordinary work",
+                })
+                .where(eq(chatDeliveries.id, current.id))
+                .returning({ id: chatDeliveries.id });
+              return changed.length === 1;
+            })
+            .catch((error: unknown) => {
+              if (isExternalChatWaitAuthorizationContention(error))
+                return false;
+              throw error;
+            });
+          if (!filtered) break;
+          // Retain original evidence/comments; filtering adds no user content
+          // and cannot hydrate attachments, invoke commands, or send feedback.
+          await settleRejectedInboundWakeups(delivery.id);
+          liveInboundMessages.delete(delivery.id);
           continue;
         }
         if (endpoint.status === "archived" || endpoint.status === "revoked") {

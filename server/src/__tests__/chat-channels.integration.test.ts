@@ -61071,6 +61071,393 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  describe("Telegram retained zero-message admission", () => {
+    it.each([
+      { state: "received", command: false, source: "zero" },
+      { state: "retry", command: false, source: "zero" },
+      { state: "processing", command: false, source: "zero" },
+      { state: "received", command: true, source: "zero" },
+      { state: "retry", command: true, source: "zero" },
+      { state: "processing", command: true, source: "zero" },
+      { state: "issued", command: false, source: "zero" },
+      { state: "issued", command: false, source: "zero_sequence" },
+      { state: "retry", command: false, source: "zero_event" },
+      { state: "processing", command: false, source: "zero_microseconds" },
+      { state: "processing", command: false, source: "zero_locked" },
+      { state: "processing", command: false, source: "zero_replaced" },
+      { state: "received", command: false, source: "positive" },
+      { state: "issued", command: false, source: "positive" },
+      { state: "received", command: false, source: "legacy" },
+    ] as const)(
+      "recovers only ordinary source identity ($state / command=$command / $source)",
+      async ({ state, command, source }) => {
+        const fixture = await seedCompany();
+        const pendingWake = state === "issued";
+        const replacedSource = source === "zero_replaced";
+        const preparingWake = source === "zero_locked" || replacedSource;
+        const seededWake = pendingWake || preparingWake;
+        const denied = source.startsWith("zero") && !replacedSource;
+        const first = await configuredTelegramEndpoint(fixture, {
+          deferWebhookProcessing: !seededWake,
+          scheduleDeferredWork: () => undefined,
+          ...(seededWake
+            ? {
+                wakeup: async () => {
+                  throw new Error("injected scheduler outage before receipt");
+                },
+              }
+            : {}),
+        });
+        let restarted: ReturnType<typeof createService> | undefined;
+        try {
+          await db
+            .update(chatEndpoints)
+            .set({ status: "active" })
+            .where(eq(chatEndpoints.id, first.endpoint.id));
+          await db.insert(chatEndpointResources).values({
+            companyId: fixture.companyId,
+            endpointId: first.endpoint.id,
+            type: "chat",
+            providerResourceId: "-100123",
+            label: "Retained source fixture",
+            availability: "available",
+            enabled: true,
+          });
+          const channel = makeThread({
+            channelId: "-100123",
+            id: "telegram:-100123",
+            isDM: false,
+          });
+          await deliverMessage({
+            callbacks: first.callbacks,
+            endpointId: first.endpoint.id,
+            provider: "telegram",
+            thread: channel.thread,
+            trigger: "mention",
+            message: makeMessage({
+              id: "-100123:71",
+              text: command
+                ? "/task PRIVATE_RETAINED_ZERO_BODY"
+                : "@maya PRIVATE_RETAINED_ZERO_BODY",
+              mentioned: true,
+              userId: "77115580",
+              raw: {
+                message_id: 71,
+                chat: { id: -100123 },
+                from: { id: 77115580 },
+                date: Math.floor(Date.now() / 1000),
+              },
+            }),
+          });
+          const [original] = await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, first.endpoint.id));
+          expect(original).toMatchObject({
+            state: seededWake ? "processed" : "received",
+          });
+          const actions = await db
+            .select()
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.deliveryId, original.id),
+                eq(chatActions.kind, "inbound_wakeup"),
+              ),
+            );
+          expect(actions).toHaveLength(seededWake ? 1 : 0);
+          if (seededWake)
+            expect(actions[0]).toMatchObject({ status: "issued" });
+          expect(
+            await db
+              .select()
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.companyId, fixture.companyId)),
+          ).toEqual([]);
+          await first.service.shutdown();
+          expect(first.runtime.get(first.endpoint.id)).toBeNull();
+          // Simulate a receipt saved by an older process. No current runtime
+          // callback supplies raw message_id during either recovery path.
+          const messageId =
+            source === "zero" || source === "zero_microseconds" || preparingWake
+              ? "-100123:0"
+              : source === "legacy"
+                ? "legacy-message"
+                : "-100123:71";
+          const eventId = `${channel.thread.id}:${source === "zero_event" ? "-100123:0" : messageId}`;
+          const normalized = original.normalizedEvent as {
+            message: Record<string, unknown>;
+          };
+          const retained = {
+            ...original.normalizedEvent,
+            providerEventId: eventId,
+            message: {
+              ...normalized.message,
+              providerMessageId: messageId,
+              providerMessageSequence:
+                source === "zero_sequence"
+                  ? 0
+                  : source === "legacy" || source === "zero"
+                    ? null
+                    : 71,
+            },
+          };
+          await db
+            .update(chatDeliveries)
+            .set({
+              providerEventId: eventId,
+              normalizedEvent: retained,
+              state: pendingWake
+                ? "processed"
+                : (state as "received" | "retry" | "processing"),
+              nextAttemptAt: new Date(0),
+              updatedAt: new Date(0),
+            })
+            .where(eq(chatDeliveries.id, original.id));
+          if (source === "zero_microseconds") {
+            await db.execute(
+              sql`update chat_deliveries set updated_at = '2026-09-01 12:00:00.123456+00'::timestamptz where id = ${original.id}::uuid`,
+            );
+            expect(
+              await db
+                .select({
+                  micros: sql<string>`to_char(${chatDeliveries.updatedAt}, 'US')`,
+                })
+                .from(chatDeliveries)
+                .where(eq(chatDeliveries.id, original.id)),
+            ).toEqual([{ micros: "123456" }]);
+          }
+          if (seededWake) {
+            await db
+              .update(chatActions)
+              .set({
+                ...(preparingWake ? { status: "preparing" } : {}),
+                result: {
+                  code: "inbound_wakeup_retry",
+                  retryAt: new Date(0).toISOString(),
+                },
+              })
+              .where(eq(chatActions.id, actions[0]!.id));
+            await db
+              .update(chatMessageLinks)
+              .set({ providerMessageId: messageId })
+              .where(eq(chatMessageLinks.deliveryId, original.id));
+          }
+          const commentsBefore = await db
+            .select()
+            .from(issueComments)
+            .where(eq(issueComments.companyId, fixture.companyId));
+          const issuesBefore = await db
+            .select()
+            .from(issues)
+            .where(eq(issues.companyId, fixture.companyId));
+          const publicationsBefore = await db
+            .select()
+            .from(chatPublications)
+            .where(eq(chatPublications.companyId, fixture.companyId));
+          restarted = createService(
+            new FakeChatSdkRuntime(),
+            fakeTelegramFetch() as typeof globalThis.fetch,
+            { scheduleDeferredWork: () => undefined },
+          );
+          if (preparingWake) {
+            const replacement = {
+              ...retained,
+              providerEventId: `${channel.thread.id}:-100123:71`,
+              message: {
+                ...retained.message,
+                providerMessageId: "-100123:71",
+                providerMessageSequence: 71,
+              },
+            };
+            let release!: () => void;
+            let acquired!: () => void;
+            const held = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            const locked = new Promise<void>((resolve) => {
+              acquired = resolve;
+            });
+            const owner = db.transaction(async (tx) => {
+              await tx
+                .select()
+                .from(chatDeliveries)
+                .where(eq(chatDeliveries.id, original.id))
+                .for("update");
+              await tx
+                .update(chatDeliveries)
+                .set({
+                  updatedAt: new Date(),
+                  ...(replacedSource
+                    ? {
+                        providerEventId: replacement.providerEventId,
+                        normalizedEvent: replacement,
+                      }
+                    : {}),
+                })
+                .where(eq(chatDeliveries.id, original.id));
+              if (replacedSource)
+                await tx
+                  .update(chatMessageLinks)
+                  .set({ providerMessageId: "-100123:71" })
+                  .where(eq(chatMessageLinks.deliveryId, original.id));
+              acquired();
+              await held;
+            });
+            await locked;
+            let drain: Promise<unknown> | undefined;
+            let deadline: ReturnType<typeof setTimeout> | undefined;
+            try {
+              drain = restarted.service.processPendingDeliveries(
+                25,
+                original.id,
+              );
+              await Promise.race([
+                drain,
+                new Promise<never>((_resolve, reject) => {
+                  deadline = setTimeout(
+                    () =>
+                      reject(
+                        new Error(
+                          "held claim must stop the drain without waiting",
+                        ),
+                      ),
+                    1500,
+                  );
+                }),
+              ]);
+              expect(
+                await db
+                  .select({ state: chatDeliveries.state })
+                  .from(chatDeliveries)
+                  .where(eq(chatDeliveries.id, original.id)),
+              ).toEqual([{ state: "processing" }]);
+              expect(
+                await db
+                  .select({ status: chatActions.status })
+                  .from(chatActions)
+                  .where(eq(chatActions.id, actions[0]!.id)),
+              ).toEqual([{ status: "preparing" }]);
+              expect(restarted.wakeup).not.toHaveBeenCalled();
+            } finally {
+              if (deadline) clearTimeout(deadline);
+              release();
+              await owner;
+              await drain;
+            }
+            // The newly committed live claim remains owned; filtering must
+            // not continue from the stale pre-lock candidate snapshot.
+            await restarted.service.processPendingDeliveries(25, original.id);
+            if (replacedSource)
+              expect(
+                await db
+                  .select({ normalizedEvent: chatDeliveries.normalizedEvent })
+                  .from(chatDeliveries)
+                  .where(eq(chatDeliveries.id, original.id)),
+              ).toEqual([{ normalizedEvent: replacement }]);
+            expect(
+              await db
+                .select({ status: chatActions.status })
+                .from(chatActions)
+                .where(eq(chatActions.id, actions[0]!.id)),
+            ).toEqual([{ status: "preparing" }]);
+            await db.execute(
+              sql`update chat_deliveries set updated_at = '2026-09-01 12:00:00.123456+00'::timestamptz where id = ${original.id}::uuid`,
+            );
+          }
+          await restarted.service.processPendingDeliveries(25, original.id);
+          const [settled] = await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.id, original.id));
+          if (denied) {
+            expect(restarted.wakeup).not.toHaveBeenCalled();
+            expect(settled).toMatchObject({
+              state: pendingWake ? "processed" : "filtered",
+            });
+            expect(settled.normalizedEvent).toEqual(retained);
+            expect(settled.redactedError).not.toContain(
+              "PRIVATE_RETAINED_ZERO_BODY",
+            );
+            expect(
+              await db
+                .select()
+                .from(issueComments)
+                .where(eq(issueComments.companyId, fixture.companyId)),
+            ).toEqual(commentsBefore);
+            expect(
+              await db
+                .select()
+                .from(issues)
+                .where(eq(issues.companyId, fixture.companyId)),
+            ).toEqual(issuesBefore);
+            expect(
+              await db
+                .select()
+                .from(chatPublications)
+                .where(eq(chatPublications.companyId, fixture.companyId)),
+            ).toEqual(publicationsBefore);
+            if (seededWake)
+              expect(
+                await db
+                  .select()
+                  .from(chatActions)
+                  .where(eq(chatActions.id, actions[0]!.id)),
+              ).toEqual([
+                expect.objectContaining({
+                  status: "failed",
+                  payload: actions[0]!.payload,
+                  result: expect.objectContaining({
+                    code: preparingWake
+                      ? "inbound_wakeup_delivery_rejected"
+                      : "inbound_wakeup_authorization_changed",
+                  }),
+                }),
+              ]);
+            for (const runtime of restarted.runtime.endpoints.values()) {
+              expect(runtime.posts).toEqual([]);
+              expect(runtime.reactions).toEqual([]);
+              expect(runtime.rehydratedAttachmentDescriptors).toEqual([]);
+            }
+          } else {
+            expect(restarted.wakeup).toHaveBeenCalledOnce();
+            expect(settled.state).toBe("processed");
+          }
+          expect(
+            await db
+              .select()
+              .from(agentWakeupRequests)
+              .where(eq(agentWakeupRequests.companyId, fixture.companyId)),
+          ).toHaveLength(denied ? 0 : 1);
+          expect(
+            await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.companyId, fixture.companyId)),
+          ).toEqual([]);
+          await restarted.service.processPendingDeliveries(25, original.id);
+          expect(restarted.wakeup).toHaveBeenCalledTimes(denied ? 0 : 1);
+          if (denied)
+            expect(
+              await db
+                .select()
+                .from(chatDeliveries)
+                .where(eq(chatDeliveries.id, original.id)),
+            ).toEqual([settled]);
+        } finally {
+          try {
+            await retirePublicationFixture(
+              restarted?.service ?? first.service,
+              first.endpoint.id,
+            );
+          } finally {
+            await first.service.shutdown();
+          }
+        }
+      },
+    );
+  });
+
   describe("Telegram current rich inbound compatibility", () => {
     it.each([
       "mixed_files",
